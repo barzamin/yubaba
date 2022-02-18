@@ -1,0 +1,14 @@
+[package]
+name = "trypanophobia"
+author = "3moon <erin@hecke.rs>"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[dependencies.windows]
+version = "0.32.0"
+features = [
+    "alloc",
+    "Win32_Foundation",
+]
