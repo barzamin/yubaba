@@ -9,7 +9,7 @@ use windows::Win32::{
         Diagnostics::Debug::WriteProcessMemory,
         Memory::{
             VirtualAllocEx, MEM_RESERVE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE,
-            VIRTUAL_ALLOCATION_TYPE,
+            VIRTUAL_ALLOCATION_TYPE, PAGE_EXECUTE_READWRITE,
         },
         Threading::{OpenProcess, PROCESS_ALL_ACCESS},
     },
@@ -21,6 +21,10 @@ struct Opt {
 
     #[structopt(parse(from_os_str))]
     dll: PathBuf,
+
+    /// dry dry bones
+    #[structopt(short, long)]
+    dry: bool,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -142,9 +146,22 @@ fn main() -> Result<()> {
         .into();
 
     debug!(pid, ?host_proc, "got proc handle for host");
+    debug!(img_base=pe_opt_hdr.windows_fields.image_base, "dll image base?");
 
-    let inj_img_buf = unsafe { valloc(&host_proc, None, img_size, MEM_RESERVE, PAGE_READWRITE) }?;
+    let inj_img_buf = unsafe {
+        valloc(
+            &host_proc,
+            None, //Some(pe_opt_hdr.windows_fields.image_base as *const c_void),
+            img_size,
+            MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        )
+    }?;
     debug!(pid, size = img_size, "allocated memory block in process");
+
+    for section in pe.sections {
+        debug!(?section, name=%String::from_utf8_lossy(&section.name).into_owned(), "pe section");
+    }
 
     Ok(())
 }
