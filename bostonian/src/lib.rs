@@ -3,7 +3,7 @@
 use std::{ffi::c_void, ptr};
 
 use windows::Win32::{
-    Foundation::{BOOL, HINSTANCE, HWND, PSTR},
+    Foundation::{BOOL, HINSTANCE, PSTR},
     System::{LibraryLoader::DisableThreadLibraryCalls, SystemServices::DLL_PROCESS_ATTACH},
     UI::WindowsAndMessaging::{MessageBoxA, MB_OK},
 };
