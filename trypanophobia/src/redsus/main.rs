@@ -10,6 +10,7 @@ use win32::{LPVOID, DWORD, BOOL, DLL_PROCESS_ATTACH};
 use crate::win32::{IMAGE_IMPORT_DESCRIPTOR, IMAGE_DOS_HEADER, IMAGE_NT_HEADERS32, IMAGE_OPTIONAL_HEADER32, IMAGE_DIRECTORY_ENTRY_IMPORT, CHAR, ULONG_PTR, IMAGE_IMPORT_BY_NAME, c_char, LPCSTR};
 
 mod win32;
+mod iface;
 
 type DllEntryPoint = unsafe extern "system" fn(LPVOID, DWORD, LPVOID) -> BOOL;
 
@@ -18,21 +19,14 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-#[repr(C)]
-pub struct ShellcodeInput {
-    base: *const win32::c_void,
-    load_library: *const win32::LoadLibraryA,
-    get_proc_addr: *const win32::GetProcAddress,
-}
-
 pub const IMAGE_ORDINAL_FLAG32: u32 = 0x80000000;
 fn IMAGE_SNAP_BY_ORDINAL32(ordinal: u32) -> bool {
     (ordinal & IMAGE_ORDINAL_FLAG32) != 0
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn _shellcode(dat: *const ShellcodeInput) {
-    // asm!("int3");
+pub unsafe extern "C" fn _shellcode(dat: *const iface::ShellcodeInput) {
+    asm!("int3");
 
     let base = (*dat).base;
     let dos_header = &*(base as *const IMAGE_DOS_HEADER);

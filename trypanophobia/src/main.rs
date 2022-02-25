@@ -1,5 +1,3 @@
-mod shellcode;
-
 use color_eyre::eyre::{eyre, Result};
 use exe::{FileCharacteristics, PEImage, CCharString};
 use std::{ffi::c_void, path::PathBuf, ptr};
@@ -18,9 +16,11 @@ use windows::Win32::{
             PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VIRTUAL_ALLOCATION_TYPE,
         },
         SystemServices::SE_DEBUG_NAME,
-        Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_ALL_ACCESS, CreateRemoteThread},
+        Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_ALL_ACCESS, CreateRemoteThread}, LibraryLoader::{GetModuleHandleA, GetProcAddress},
     },
 };
+
+mod redsus;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -71,8 +71,11 @@ pub enum Error {
     #[error("Error reading PE section: {0}")]
     PeSectionRead(color_eyre::eyre::Report), // TODO(petra): hack
 
-    #[error("Shellcode generation error: {0}")]
-    Shellcode(#[from] shellcode::Error),
+    #[error("GetModuleHandle() failed: {0}")]
+    GetModuleHandle(windows::core::Error),
+
+    #[error("GetProcAddress() returned nullptr")]
+    GetProcAddress,
 }
 
 /// [`HANDLE`] wrapper that calls [`CloseHandle`] on [`Drop`].
@@ -230,7 +233,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         .into();
 
     debug!(pid, ?host_proc, "got proc handle for host");
-/* 
+
     let img_size = nt_headers.optional_header.size_of_image as usize;
     let inj_img_buf = unsafe {
         valloc(
@@ -268,6 +271,16 @@ fn main() -> color_eyre::eyre::Result<()> {
         .relocate(&mut relocated_dll.pe, inj_img_buf as u64)
         .map_err(|e| Error::PeReloc(eyre!("{}", e)))?;
 
+    info!("copying PE header");
+    unsafe {
+        write_proc_mem(
+            &host_proc,
+            dll.as_ptr() as _,
+            inj_img_buf,
+            0x1000,
+        )
+    }?;
+
     info!("copying DLL sections");
     let section_tbl = relocated_dll
         .pe
@@ -293,38 +306,70 @@ fn main() -> color_eyre::eyre::Result<()> {
                 data.as_ptr() as *const c_void,
                 inj_img_buf.add(section.virtual_address.0 as usize),
                 data.len(),
-            )?;
-        }
-    } */
+            )
+        }?;
+    }
 
+    let hk32 = unsafe { GetModuleHandleA("kernel32.dll") }
+        .ok()
+        .map_err(Error::GetModuleHandle)?;
+    let proc_loadliba =
+        unsafe { GetProcAddress(hk32, "LoadLibraryA") }.ok_or(Error::GetProcAddress)?;
+    let proc_getprocaddr =
+        unsafe { GetProcAddress(hk32, "GetProcAddress") }.ok_or(Error::GetProcAddress)?;
 
-    let shellcode = shellcode::load_imports(&dll.pe)?;
-    println!("{:?}", shellcode);
+    debug!(
+        LoadLibraryA=?(proc_loadliba as *const c_void),
+        GetProcAddress=?(proc_getprocaddr as *const c_void),
+        "fetched kernel32.dll function pointers"
+    );
 
-    // let shellcode_buf = unsafe { valloc(
-    //     &host_proc,
-    //     None,
-    //     0x100,
-    //     MEM_COMMIT | MEM_RESERVE,
-    //     PAGE_EXECUTE_READWRITE
-    // ) }?;
+    let shellcode = include_bytes!(concat!(env!("OUT_DIR"), "/redsus/redsus.bin"));
+    let shellcode_buf = unsafe { valloc(
+        &host_proc,
+        None,
+        shellcode.len(),
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_EXECUTE_READWRITE
+    ) }?;
 
-    // unsafe { write_proc_mem(
-    //     &host_proc,
-    //     shellcode.as_ptr() as _,
-    //     shellcode_buf, 
-    //     shellcode.len()
-    // ) }?;
+    let shellcode_params_buf = unsafe { valloc(
+        &host_proc,
+        None,
+        core::mem::size_of::<redsus::iface::ShellcodeInput>(),
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_READWRITE
+    ) }?;
 
-    // let h_thread = unsafe { CreateRemoteThread(
-    //     host_proc.raw(),
-    //     0 as _,
-    //     0, // stack
-    //     Some(core::mem::transmute(shellcode_buf)),
-    //     0 as _,
-    //     0,
-    //     0 as _,
-    // ) }; 
+    let shellcode_params = redsus::iface::ShellcodeInput {
+        base: inj_img_buf as _,
+        load_library: proc_loadliba as _,
+        get_proc_addr: proc_getprocaddr as _,
+    };
+
+    unsafe { write_proc_mem(
+        &host_proc,
+        shellcode.as_ptr() as _,
+        shellcode_buf, 
+        shellcode.len()
+    ) }?;
+
+    unsafe { write_proc_mem(
+        &host_proc,
+        &shellcode_params as *const redsus::iface::ShellcodeInput as *const c_void,
+        shellcode_params_buf, 
+        core::mem::size_of::<redsus::iface::ShellcodeInput>()
+    ) }?;
+
+    let h_thread = unsafe { CreateRemoteThread(
+        host_proc.raw(),
+        0 as _,
+        0, // stack
+        Some(core::mem::transmute(shellcode_buf)),
+        shellcode_params_buf as _,
+        0,
+        0 as _,
+    ) }; 
 
     Ok(())
 }

@@ -39,14 +39,18 @@ fn main() -> Result<()> {
         out.code(),
     );
 
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/redsus/main.rs");
-    println!("cargo:rerun-if-changed=src/redsus/win32.rs");
-
     let image = PEImage::from_disk_file(redsus_out_dir.join("redsus.exe"))?;
-    let text_section = image.pe.get_section_by_name(".text".to_string()).map_err(|e|eyre!("{:?}",e))?;
-    let data = text_section.read(&image.pe).map_err(|e|eyre!("{:?}",e))?;
-    std::fs::write(redsus_out_dir.join("redsus.bin"), data)?;
+    let nt_headers = image
+        .pe
+        .get_valid_nt_headers_32()
+        .map_err(|e|eyre!("{}", e))?;
+    let text_section = image.pe.get_section_by_name(".text".to_string()).map_err(|e|eyre!("{}",e))?;
+
+    let data = text_section.read(&image.pe).map_err(|e|eyre!("{}",e))?;
+    // TODO
+    let start = (nt_headers.optional_header.address_of_entry_point.0 - text_section.virtual_address.0) as usize;
+    std::fs::write(redsus_out_dir.join("redsus.bin"),
+        &data[start..])?;
 
     Ok(())
 }
