@@ -4,23 +4,20 @@ use std::{ffi::c_void, path::PathBuf, ptr};
 use structopt::StructOpt;
 use tracing::{debug, info, trace};
 use windows::Win32::{
-    Foundation::{CloseHandle, GetLastError, HANDLE, WIN32_ERROR},
-    Security::{
-        AdjustTokenPrivileges, LookupPrivilegeValueA, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
-        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
-    },
     System::{
-        Diagnostics::Debug::WriteProcessMemory,
         Memory::{
-            VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
-            PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VIRTUAL_ALLOCATION_TYPE,
+            VirtualProtectEx, MEM_COMMIT, MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE,
         },
-        SystemServices::SE_DEBUG_NAME,
-        Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_ALL_ACCESS, CreateRemoteThread}, LibraryLoader::{GetModuleHandleA, GetProcAddress},
+        Threading::{OpenProcess, PROCESS_ALL_ACCESS, CreateRemoteThread}, LibraryLoader::{GetModuleHandleA, GetProcAddress},
     },
 };
 
+use crate::{win32::Handle, mem::{valloc, write_proc_mem}};
+
 mod redsus;
+mod win32;
+mod mem;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -36,17 +33,6 @@ struct Opt {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("VirtualAllocEx failed: {0:?}")]
-    VirtualAllocation(WIN32_ERROR),
-
-    #[error("WriteProcessMemory failed: {0:?}")]
-    WriteProcessMemory(WIN32_ERROR),
-
-    #[error(
-        "Underwrote to process memory: tried to write {expected}, actually wrote {written} bytes"
-    )]
-    ProcessMemoryUnderwrite { expected: usize, written: usize },
-
     #[error("Couldn't open process: {0}")]
     ProcOpen(windows::core::Error),
 
@@ -78,96 +64,6 @@ pub enum Error {
     GetProcAddress,
 }
 
-/// [`HANDLE`] wrapper that calls [`CloseHandle`] on [`Drop`].
-#[derive(Debug)]
-struct Handle(pub HANDLE);
-
-impl Handle {
-    pub fn new(h: HANDLE) -> Self {
-        Self(h)
-    }
-
-    pub unsafe fn raw(&self) -> HANDLE {
-        self.0
-    }
-}
-
-impl From<HANDLE> for Handle {
-    fn from(h: HANDLE) -> Self {
-        Handle::new(h)
-    }
-}
-
-impl Drop for Handle {
-    fn drop(&mut self) {
-        trace!("dropping handle {:?}", self.0);
-        unsafe { CloseHandle(self.0) }
-            .ok()
-            .expect("failed to CloseHandle()")
-    }
-}
-
-unsafe fn valloc(
-    proc: &Handle,
-    base_addr: Option<*const c_void>,
-    size: usize,
-    alloc_type: VIRTUAL_ALLOCATION_TYPE,
-    protection: PAGE_PROTECTION_FLAGS,
-) -> Result<*mut c_void, Error> {
-    trace!(?proc, ?base_addr, size, "allocation in external process");
-
-    let addr = VirtualAllocEx(
-        proc.raw(),
-        base_addr.unwrap_or(ptr::null()),
-        size,
-        alloc_type,
-        protection,
-    );
-
-    if addr.is_null() {
-        Err(Error::VirtualAllocation(GetLastError()))
-    } else {
-        Ok(addr)
-    }
-}
-
-unsafe fn vfree(proc: &Handle, buf: *mut c_void) {
-    trace!(?proc, "freeing in external process");
-    VirtualFreeEx(proc.raw(), buf, 0, MEM_RELEASE);
-}
-
-unsafe fn write_proc_mem(
-    proc: &Handle,
-    src: *const c_void,
-    dst: *const c_void,
-    size: usize,
-) -> Result<(), Error> {
-    trace!(
-        ?proc,
-        ?src,
-        ?dst,
-        size,
-        "WriteProcessMemory() : {:#x} -> {:#x} ({:#x} bytes)",
-        src as usize,
-        dst as usize,
-        size
-    );
-
-    let mut nwritten: usize = 0;
-    if !WriteProcessMemory(proc.raw(), dst, src, size, &mut nwritten as _).as_bool() {
-        return Err(Error::WriteProcessMemory(GetLastError()));
-    }
-
-    if size != nwritten {
-        return Err(Error::ProcessMemoryUnderwrite {
-            expected: size,
-            written: nwritten,
-        });
-    }
-
-    Ok(())
-}
-
 fn main() -> color_eyre::eyre::Result<()> {
     color_eyre::install()?;
     tracing_subscriber::fmt::init();
@@ -187,44 +83,8 @@ fn main() -> color_eyre::eyre::Result<()> {
         return Err(eyre!("lib isn't a dll"));
     }
 
-    let mut our_proc_tok: HANDLE = Default::default();
-    if unsafe {
-        OpenProcessToken(
-            GetCurrentProcess(),
-            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-            &mut our_proc_tok as _,
-        )
-    }
-    .as_bool()
-    {
-        let mut privileges = TOKEN_PRIVILEGES {
-            PrivilegeCount: 1,
-            Privileges: [LUID_AND_ATTRIBUTES {
-                Attributes: SE_PRIVILEGE_ENABLED,
-                ..Default::default()
-            }],
-        };
-
-        if unsafe {
-            LookupPrivilegeValueA(None, SE_DEBUG_NAME, &mut privileges.Privileges[0].Luid).as_bool()
-        } {
-            trace!("AdjustTokenPrivileges()");
-            unsafe {
-                AdjustTokenPrivileges(
-                    &our_proc_tok,
-                    false,
-                    &mut privileges,
-                    0,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                );
-            }
-        }
-
-        unsafe {
-            CloseHandle(our_proc_tok);
-        }
-    }
+    // TODO(petra)
+    win32::escalate();
 
     let pid = opt.pid;
     let host_proc: Handle = unsafe { OpenProcess(PROCESS_ALL_ACCESS, false, pid) }
