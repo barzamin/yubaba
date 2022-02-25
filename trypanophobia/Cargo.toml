@@ -13,6 +13,10 @@ thiserror = "1.0.30"
 tracing = "0.1.31"
 tracing-subscriber = "0.3.9"
 
+[build-dependencies]
+exe = "0.4.5"
+color-eyre = "0.6.0"
+
 [dependencies.windows]
 version = "0.32.0"
 features = [
