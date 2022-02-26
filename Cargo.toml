@@ -3,3 +3,7 @@ members = [
     "trypanophobia",
     "bostonian",
 ]
+
+exclude = [
+    "redsus",
+]

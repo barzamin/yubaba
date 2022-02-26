@@ -1,26 +1,25 @@
-mod shellcode;
-
 use color_eyre::eyre::{eyre, Result};
-use exe::{FileCharacteristics, PEImage, CCharString};
+use core::mem;
+use exe::{CCharString, FileCharacteristics, PEImage, PEType, PE};
 use std::{ffi::c_void, path::PathBuf, ptr};
 use structopt::StructOpt;
 use tracing::{debug, info, trace};
-use windows::Win32::{
-    Foundation::{CloseHandle, GetLastError, HANDLE, WIN32_ERROR},
-    Security::{
-        AdjustTokenPrivileges, LookupPrivilegeValueA, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
-        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+use windows::Win32::System::{
+    LibraryLoader::{GetModuleHandleA, GetProcAddress},
+    Memory::{
+        VirtualProtectEx, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS,
+        PAGE_READWRITE,
     },
-    System::{
-        Diagnostics::Debug::WriteProcessMemory,
-        Memory::{
-            VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
-            PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VIRTUAL_ALLOCATION_TYPE,
-        },
-        SystemServices::SE_DEBUG_NAME,
-        Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_ALL_ACCESS, CreateRemoteThread},
-    },
+    Threading::{CreateRemoteThread, OpenProcess, LPTHREAD_START_ROUTINE, PROCESS_ALL_ACCESS},
 };
+
+use crate::{
+    memory::{valloc, write_proc_mem},
+    win32::Handle,
+};
+
+mod memory;
+mod win32;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -36,17 +35,6 @@ struct Opt {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("VirtualAllocEx failed: {0:?}")]
-    VirtualAllocation(WIN32_ERROR),
-
-    #[error("WriteProcessMemory failed: {0:?}")]
-    WriteProcessMemory(WIN32_ERROR),
-
-    #[error(
-        "Underwrote to process memory: tried to write {expected}, actually wrote {written} bytes"
-    )]
-    ProcessMemoryUnderwrite { expected: usize, written: usize },
-
     #[error("Couldn't open process: {0}")]
     ProcOpen(windows::core::Error),
 
@@ -71,98 +59,11 @@ pub enum Error {
     #[error("Error reading PE section: {0}")]
     PeSectionRead(color_eyre::eyre::Report), // TODO(petra): hack
 
-    #[error("Shellcode generation error: {0}")]
-    Shellcode(#[from] shellcode::Error),
-}
+    #[error("GetModuleHandle() failed: {0}")]
+    GetModuleHandle(windows::core::Error),
 
-/// [`HANDLE`] wrapper that calls [`CloseHandle`] on [`Drop`].
-#[derive(Debug)]
-struct Handle(pub HANDLE);
-
-impl Handle {
-    pub fn new(h: HANDLE) -> Self {
-        Self(h)
-    }
-
-    pub unsafe fn raw(&self) -> HANDLE {
-        self.0
-    }
-}
-
-impl From<HANDLE> for Handle {
-    fn from(h: HANDLE) -> Self {
-        Handle::new(h)
-    }
-}
-
-impl Drop for Handle {
-    fn drop(&mut self) {
-        trace!("dropping handle {:?}", self.0);
-        unsafe { CloseHandle(self.0) }
-            .ok()
-            .expect("failed to CloseHandle()")
-    }
-}
-
-unsafe fn valloc(
-    proc: &Handle,
-    base_addr: Option<*const c_void>,
-    size: usize,
-    alloc_type: VIRTUAL_ALLOCATION_TYPE,
-    protection: PAGE_PROTECTION_FLAGS,
-) -> Result<*mut c_void, Error> {
-    trace!(?proc, ?base_addr, size, "allocation in external process");
-
-    let addr = VirtualAllocEx(
-        proc.raw(),
-        base_addr.unwrap_or(ptr::null()),
-        size,
-        alloc_type,
-        protection,
-    );
-
-    if addr.is_null() {
-        Err(Error::VirtualAllocation(GetLastError()))
-    } else {
-        Ok(addr)
-    }
-}
-
-unsafe fn vfree(proc: &Handle, buf: *mut c_void) {
-    trace!(?proc, "freeing in external process");
-    VirtualFreeEx(proc.raw(), buf, 0, MEM_RELEASE);
-}
-
-unsafe fn write_proc_mem(
-    proc: &Handle,
-    src: *const c_void,
-    dst: *const c_void,
-    size: usize,
-) -> Result<(), Error> {
-    trace!(
-        ?proc,
-        ?src,
-        ?dst,
-        size,
-        "WriteProcessMemory() : {:#x} -> {:#x} ({:#x} bytes)",
-        src as usize,
-        dst as usize,
-        size
-    );
-
-    let mut nwritten: usize = 0;
-    if !WriteProcessMemory(proc.raw(), dst, src, size, &mut nwritten as _).as_bool() {
-        return Err(Error::WriteProcessMemory(GetLastError()));
-    }
-
-    if size != nwritten {
-        return Err(Error::ProcessMemoryUnderwrite {
-            expected: size,
-            written: nwritten,
-        });
-    }
-
-    Ok(())
+    #[error("GetProcAddress() returned nullptr")]
+    GetProcAddress,
 }
 
 fn main() -> color_eyre::eyre::Result<()> {
@@ -184,44 +85,8 @@ fn main() -> color_eyre::eyre::Result<()> {
         return Err(eyre!("lib isn't a dll"));
     }
 
-    let mut our_proc_tok: HANDLE = Default::default();
-    if unsafe {
-        OpenProcessToken(
-            GetCurrentProcess(),
-            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-            &mut our_proc_tok as _,
-        )
-    }
-    .as_bool()
-    {
-        let mut privileges = TOKEN_PRIVILEGES {
-            PrivilegeCount: 1,
-            Privileges: [LUID_AND_ATTRIBUTES {
-                Attributes: SE_PRIVILEGE_ENABLED,
-                ..Default::default()
-            }],
-        };
-
-        if unsafe {
-            LookupPrivilegeValueA(None, SE_DEBUG_NAME, &mut privileges.Privileges[0].Luid).as_bool()
-        } {
-            trace!("AdjustTokenPrivileges()");
-            unsafe {
-                AdjustTokenPrivileges(
-                    &our_proc_tok,
-                    false,
-                    &mut privileges,
-                    0,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                );
-            }
-        }
-
-        unsafe {
-            CloseHandle(our_proc_tok);
-        }
-    }
+    // TODO(petra)
+    win32::escalate();
 
     let pid = opt.pid;
     let host_proc: Handle = unsafe { OpenProcess(PROCESS_ALL_ACCESS, false, pid) }
@@ -230,7 +95,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         .into();
 
     debug!(pid, ?host_proc, "got proc handle for host");
-/* 
+
     let img_size = nt_headers.optional_header.size_of_image as usize;
     let inj_img_buf = unsafe {
         valloc(
@@ -268,6 +133,9 @@ fn main() -> color_eyre::eyre::Result<()> {
         .relocate(&mut relocated_dll.pe, inj_img_buf as u64)
         .map_err(|e| Error::PeReloc(eyre!("{}", e)))?;
 
+    info!("copying PE header");
+    unsafe { write_proc_mem(&host_proc, dll.as_ptr() as _, inj_img_buf, 0x1000) }?;
+
     info!("copying DLL sections");
     let section_tbl = relocated_dll
         .pe
@@ -293,38 +161,78 @@ fn main() -> color_eyre::eyre::Result<()> {
                 data.as_ptr() as *const c_void,
                 inj_img_buf.add(section.virtual_address.0 as usize),
                 data.len(),
-            )?;
-        }
-    } */
+            )
+        }?;
+    }
 
+    let shellcode_pe = PE {
+        pe_type: PEType::Disk,
+        buffer: exe::Buffer::new(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/redsus/redsus.exe"
+        ))),
+    };
+    let shellcode_nt_headers = shellcode_pe
+        .get_valid_nt_headers_32()
+        .map_err(|e| eyre!("{}", e))?;
+    let shellcode_text_section = shellcode_pe
+        .get_section_by_name(".text".to_string())
+        .map_err(|e| eyre!("{}", e))?;
+    let shellcode_text = shellcode_text_section
+        .read(&shellcode_pe)
+        .map_err(|e| eyre!("{}", e))?;
+    // TODO
+    // std::fs::write(redsus_out_dir.join("redsus.bin"),
+    //     &data[start..])?;
 
-    let shellcode = shellcode::load_imports(&dll.pe)?;
-    println!("{:?}", shellcode);
+    let shellcode_buf = unsafe {
+        valloc(
+            &host_proc,
+            None,
+            shellcode_text.len(),
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        )
+    }?;
 
-    // let shellcode_buf = unsafe { valloc(
-    //     &host_proc,
-    //     None,
-    //     0x100,
-    //     MEM_COMMIT | MEM_RESERVE,
-    //     PAGE_EXECUTE_READWRITE
-    // ) }?;
+    unsafe {
+        write_proc_mem(
+            &host_proc,
+            shellcode_text.as_ptr() as _,
+            shellcode_buf,
+            shellcode_text.len(),
+        )
+    }?;
 
-    // unsafe { write_proc_mem(
-    //     &host_proc,
-    //     shellcode.as_ptr() as _,
-    //     shellcode_buf, 
-    //     shellcode.len()
-    // ) }?;
-
-    // let h_thread = unsafe { CreateRemoteThread(
-    //     host_proc.raw(),
-    //     0 as _,
-    //     0, // stack
-    //     Some(core::mem::transmute(shellcode_buf)),
-    //     0 as _,
-    //     0,
-    //     0 as _,
-    // ) }; 
+    debug!(
+        "shellcode entry point {:#x}",
+        shellcode_nt_headers
+            .optional_header
+            .address_of_entry_point
+            .0
+    );
+    let entry_pt_offset = (shellcode_nt_headers
+        .optional_header
+        .address_of_entry_point
+        .0
+        - shellcode_text_section.virtual_address.0) as isize;
+    let shellcode_entry_pt =
+        unsafe { mem::transmute((shellcode_buf as *const u8).offset(entry_pt_offset)) };
+    debug!(
+        "entry point offset: {:#x}, entering at: {:?}",
+        entry_pt_offset, shellcode_entry_pt as *const c_void
+    );
+    let h_thread = unsafe {
+        CreateRemoteThread(
+            host_proc.raw(),
+            0 as _,
+            0, // stack
+            Some(shellcode_entry_pt),
+            inj_img_buf as _,
+            0,
+            0 as _,
+        )
+    };
 
     Ok(())
 }
