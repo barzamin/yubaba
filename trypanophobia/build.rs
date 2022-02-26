@@ -2,7 +2,6 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 use color_eyre::eyre::{ensure, Result, WrapErr, eyre};
-use exe::PEImage;
 
 fn main() -> Result<()> {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
@@ -38,19 +37,6 @@ fn main() -> Result<()> {
         "cant run rustc: {:?}",
         out.code(),
     );
-
-    let image = PEImage::from_disk_file(redsus_out_dir.join("redsus.exe"))?;
-    let nt_headers = image
-        .pe
-        .get_valid_nt_headers_32()
-        .map_err(|e|eyre!("{}", e))?;
-    let text_section = image.pe.get_section_by_name(".text".to_string()).map_err(|e|eyre!("{}",e))?;
-
-    let data = text_section.read(&image.pe).map_err(|e|eyre!("{}",e))?;
-    // TODO
-    let start = (nt_headers.optional_header.address_of_entry_point.0 - text_section.virtual_address.0) as usize;
-    std::fs::write(redsus_out_dir.join("redsus.bin"),
-        &data[start..])?;
 
     Ok(())
 }
