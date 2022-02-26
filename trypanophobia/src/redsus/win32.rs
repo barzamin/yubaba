@@ -31,6 +31,13 @@ pub type DWORD = c_ulong;
 pub type ULONG_PTR = usize;
 pub type LPCSTR = *const CHAR;
 pub type BOOL = c_int;
+pub type BOOLEAN = BYTE;
+pub type WCHAR = wchar_t;
+pub type PWCH = *mut WCHAR;
+pub type PVOID = *mut c_void;
+pub type USHORT = c_ushort;
+pub type ULONG = c_ulong;
+pub type HANDLE = *mut c_void;
 pub enum HINSTANCE__ {}
 pub type HINSTANCE = *mut HINSTANCE__;
 pub type HMODULE = HINSTANCE;
@@ -154,3 +161,83 @@ pub struct IMAGE_IMPORT_BY_NAME {
 }
 
 pub const DLL_PROCESS_ATTACH: DWORD = 1;
+
+#[repr(C)]
+pub struct PEB {
+  pub InheritedAddressSpace: BOOLEAN,
+  pub ReadImageFileExecOptions: BOOLEAN,
+  pub BeingDebugged: BOOLEAN,
+  pub BitField: BOOLEAN,
+  pub Mutant: HANDLE,
+  pub ImageBaseAddress: PVOID,
+  pub Ldr: *mut PEB_LDR_DATA,
+  pub ProcessParameters: *mut RTL_USER_PROCESS_PARAMETERS,
+
+  // ...
+}
+
+// via undocumented.ntinternals.net
+#[repr(C)]
+pub struct PEB_LDR_DATA {
+  pub Length: ULONG,
+  pub Initialized: BOOLEAN,
+  pub SsHandle: HANDLE,
+  pub InLoadOrderModuleList: LIST_ENTRY,
+  pub InMemoryOrderModuleList: LIST_ENTRY,
+  pub InInitializationOrderModuleList: LIST_ENTRY,
+}
+
+#[repr(C)]
+pub struct LIST_ENTRY {
+    pub Flink: *mut LIST_ENTRY,
+    pub Blink: *mut LIST_ENTRY,
+}
+
+
+#[repr(C)]
+pub struct UNICODE_STRING {
+    pub Length: USHORT,
+    pub MaximumLength: USHORT,
+    pub Buffer: PWCH,
+}
+
+#[repr(C)]
+pub struct LDR_DATA_TABLE_ENTRY {
+    pub InLoadOrderLinks: LIST_ENTRY,
+    pub InMemoryOrderLinks: LIST_ENTRY,
+    pub u1: LIST_ENTRY,
+    pub DllBase: PVOID,
+    pub EntryPoint: PVOID,
+    pub SizeOfImage: ULONG,
+    pub FullDllName: UNICODE_STRING,
+    pub BaseDllName: UNICODE_STRING,
+    // ...
+}
+
+#[repr(C)]
+pub struct RTL_USER_PROCESS_PARAMETERS {
+  pub MaximumLength: ULONG,
+  pub Length: ULONG,
+  pub Flags: ULONG,
+  pub DebugFlags: ULONG,
+  pub ConsoleHandle: HANDLE,
+  pub ConsoleFlags: ULONG,
+  pub StandardInput: HANDLE,
+  pub StandardOutput: HANDLE,
+  pub StandardError: HANDLE,
+}
+
+#[repr(C)]
+pub struct IMAGE_EXPORT_DIRECTORY {
+    pub Characteristics: DWORD,
+    pub TimeDateStamp: DWORD,
+    pub MajorVersion: WORD,
+    pub MinorVersion: WORD,
+    pub Name: DWORD,
+    pub Base: DWORD,
+    pub NumberOfFunctions: DWORD,
+    pub NumberOfNames: DWORD,
+    pub AddressOfFunctions: DWORD,
+    pub AddressOfNames: DWORD,
+    pub AddressOfNameOrdinals: DWORD,
+}

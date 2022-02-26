@@ -15,7 +15,6 @@ use windows::Win32::{
 
 use crate::{win32::Handle, mem::{valloc, write_proc_mem}};
 
-mod redsus;
 mod win32;
 mod mem;
 
@@ -170,20 +169,6 @@ fn main() -> color_eyre::eyre::Result<()> {
         }?;
     }
 
-    let hk32 = unsafe { GetModuleHandleA("kernel32.dll") }
-        .ok()
-        .map_err(Error::GetModuleHandle)?;
-    let proc_loadliba =
-        unsafe { GetProcAddress(hk32, "LoadLibraryA") }.ok_or(Error::GetProcAddress)?;
-    let proc_getprocaddr =
-        unsafe { GetProcAddress(hk32, "GetProcAddress") }.ok_or(Error::GetProcAddress)?;
-
-    debug!(
-        LoadLibraryA=?(proc_loadliba as *const c_void),
-        GetProcAddress=?(proc_getprocaddr as *const c_void),
-        "fetched kernel32.dll function pointers"
-    );
-
     let shellcode = include_bytes!(concat!(env!("OUT_DIR"), "/redsus/redsus.bin"));
     let shellcode_buf = unsafe { valloc(
         &host_proc,
@@ -193,20 +178,6 @@ fn main() -> color_eyre::eyre::Result<()> {
         PAGE_EXECUTE_READWRITE
     ) }?;
 
-    let shellcode_params_buf = unsafe { valloc(
-        &host_proc,
-        None,
-        core::mem::size_of::<redsus::iface::ShellcodeInput>(),
-        MEM_COMMIT | MEM_RESERVE,
-        PAGE_READWRITE
-    ) }?;
-
-    let shellcode_params = redsus::iface::ShellcodeInput {
-        base: inj_img_buf as _,
-        load_library: proc_loadliba as _,
-        get_proc_addr: proc_getprocaddr as _,
-    };
-
     unsafe { write_proc_mem(
         &host_proc,
         shellcode.as_ptr() as _,
@@ -214,19 +185,12 @@ fn main() -> color_eyre::eyre::Result<()> {
         shellcode.len()
     ) }?;
 
-    unsafe { write_proc_mem(
-        &host_proc,
-        &shellcode_params as *const redsus::iface::ShellcodeInput as *const c_void,
-        shellcode_params_buf, 
-        core::mem::size_of::<redsus::iface::ShellcodeInput>()
-    ) }?;
-
     let h_thread = unsafe { CreateRemoteThread(
         host_proc.raw(),
         0 as _,
         0, // stack
         Some(core::mem::transmute(shellcode_buf)),
-        shellcode_params_buf as _,
+        inj_img_buf as _,
         0,
         0 as _,
     ) }; 
