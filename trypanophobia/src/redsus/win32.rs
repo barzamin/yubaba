@@ -164,27 +164,26 @@ pub const DLL_PROCESS_ATTACH: DWORD = 1;
 
 #[repr(C)]
 pub struct PEB {
-  pub InheritedAddressSpace: BOOLEAN,
-  pub ReadImageFileExecOptions: BOOLEAN,
-  pub BeingDebugged: BOOLEAN,
-  pub BitField: BOOLEAN,
-  pub Mutant: HANDLE,
-  pub ImageBaseAddress: PVOID,
-  pub Ldr: *mut PEB_LDR_DATA,
-  pub ProcessParameters: *mut RTL_USER_PROCESS_PARAMETERS,
-
-  // ...
+    pub InheritedAddressSpace: BOOLEAN,
+    pub ReadImageFileExecOptions: BOOLEAN,
+    pub BeingDebugged: BOOLEAN,
+    pub BitField: BOOLEAN,
+    pub Mutant: HANDLE,
+    pub ImageBaseAddress: PVOID,
+    pub Ldr: *mut PEB_LDR_DATA,
+    pub ProcessParameters: *mut RTL_USER_PROCESS_PARAMETERS,
+    // ...
 }
 
 // via undocumented.ntinternals.net
 #[repr(C)]
 pub struct PEB_LDR_DATA {
-  pub Length: ULONG,
-  pub Initialized: BOOLEAN,
-  pub SsHandle: HANDLE,
-  pub InLoadOrderModuleList: LIST_ENTRY,
-  pub InMemoryOrderModuleList: LIST_ENTRY,
-  pub InInitializationOrderModuleList: LIST_ENTRY,
+    pub Length: ULONG,
+    pub Initialized: BOOLEAN,
+    pub SsHandle: HANDLE,
+    pub InLoadOrderModuleList: LIST_ENTRY,
+    pub InMemoryOrderModuleList: LIST_ENTRY,
+    pub InInitializationOrderModuleList: LIST_ENTRY,
 }
 
 #[repr(C)]
@@ -192,7 +191,6 @@ pub struct LIST_ENTRY {
     pub Flink: *mut LIST_ENTRY,
     pub Blink: *mut LIST_ENTRY,
 }
-
 
 #[repr(C)]
 pub struct UNICODE_STRING {
@@ -216,15 +214,15 @@ pub struct LDR_DATA_TABLE_ENTRY {
 
 #[repr(C)]
 pub struct RTL_USER_PROCESS_PARAMETERS {
-  pub MaximumLength: ULONG,
-  pub Length: ULONG,
-  pub Flags: ULONG,
-  pub DebugFlags: ULONG,
-  pub ConsoleHandle: HANDLE,
-  pub ConsoleFlags: ULONG,
-  pub StandardInput: HANDLE,
-  pub StandardOutput: HANDLE,
-  pub StandardError: HANDLE,
+    pub MaximumLength: ULONG,
+    pub Length: ULONG,
+    pub Flags: ULONG,
+    pub DebugFlags: ULONG,
+    pub ConsoleHandle: HANDLE,
+    pub ConsoleFlags: ULONG,
+    pub StandardInput: HANDLE,
+    pub StandardOutput: HANDLE,
+    pub StandardError: HANDLE,
 }
 
 #[repr(C)]

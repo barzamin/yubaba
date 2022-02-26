@@ -1,7 +1,17 @@
 use std::ptr;
 
 use tracing::trace;
-use windows::Win32::{Foundation::{HANDLE, CloseHandle}, System::{Threading::{OpenProcessToken, GetCurrentProcess}, SystemServices::SE_DEBUG_NAME}, Security::{TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY, TOKEN_PRIVILEGES, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, LookupPrivilegeValueA, AdjustTokenPrivileges}};
+use windows::Win32::{
+    Foundation::{CloseHandle, HANDLE},
+    Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueA, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    },
+    System::{
+        SystemServices::SE_DEBUG_NAME,
+        Threading::{GetCurrentProcess, OpenProcessToken},
+    },
+};
 
 /// [`HANDLE`] wrapper that calls [`CloseHandle`] on [`Drop`].
 #[derive(Debug)]

@@ -1,23 +1,25 @@
 use color_eyre::eyre::{eyre, Result};
-use exe::{FileCharacteristics, PEImage, CCharString, PEType, PE};
-use std::{ffi::c_void, path::PathBuf, ptr};
 use core::mem;
+use exe::{CCharString, FileCharacteristics, PEImage, PEType, PE};
+use std::{ffi::c_void, path::PathBuf, ptr};
 use structopt::StructOpt;
 use tracing::{debug, info, trace};
-use windows::Win32::{
-    System::{
-        Memory::{
-            VirtualProtectEx, MEM_COMMIT, MEM_RESERVE,
-            PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE,
-        },
-        Threading::{OpenProcess, PROCESS_ALL_ACCESS, CreateRemoteThread, LPTHREAD_START_ROUTINE}, LibraryLoader::{GetModuleHandleA, GetProcAddress},
+use windows::Win32::System::{
+    LibraryLoader::{GetModuleHandleA, GetProcAddress},
+    Memory::{
+        VirtualProtectEx, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS,
+        PAGE_READWRITE,
     },
+    Threading::{CreateRemoteThread, OpenProcess, LPTHREAD_START_ROUTINE, PROCESS_ALL_ACCESS},
 };
 
-use crate::{win32::Handle, memory::{valloc, write_proc_mem}};
+use crate::{
+    memory::{valloc, write_proc_mem},
+    win32::Handle,
+};
 
-mod win32;
 mod memory;
+mod win32;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -132,14 +134,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         .map_err(|e| Error::PeReloc(eyre!("{}", e)))?;
 
     info!("copying PE header");
-    unsafe {
-        write_proc_mem(
-            &host_proc,
-            dll.as_ptr() as _,
-            inj_img_buf,
-            0x1000,
-        )
-    }?;
+    unsafe { write_proc_mem(&host_proc, dll.as_ptr() as _, inj_img_buf, 0x1000) }?;
 
     info!("copying DLL sections");
     let section_tbl = relocated_dll
@@ -172,45 +167,72 @@ fn main() -> color_eyre::eyre::Result<()> {
 
     let shellcode_pe = PE {
         pe_type: PEType::Disk,
-        buffer: exe::Buffer::new(include_bytes!(concat!(env!("OUT_DIR"), "/redsus/redsus.exe"))),
+        buffer: exe::Buffer::new(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/redsus/redsus.exe"
+        ))),
     };
     let shellcode_nt_headers = shellcode_pe
         .get_valid_nt_headers_32()
-        .map_err(|e|eyre!("{}", e))?;
-    let shellcode_text_section = shellcode_pe.get_section_by_name(".text".to_string()).map_err(|e|eyre!("{}",e))?;
-    let shellcode_text = shellcode_text_section.read(&shellcode_pe).map_err(|e|eyre!("{}",e))?;
+        .map_err(|e| eyre!("{}", e))?;
+    let shellcode_text_section = shellcode_pe
+        .get_section_by_name(".text".to_string())
+        .map_err(|e| eyre!("{}", e))?;
+    let shellcode_text = shellcode_text_section
+        .read(&shellcode_pe)
+        .map_err(|e| eyre!("{}", e))?;
     // TODO
     // std::fs::write(redsus_out_dir.join("redsus.bin"),
     //     &data[start..])?;
 
-    let shellcode_buf = unsafe { valloc(
-        &host_proc,
-        None,
-        shellcode_text.len(),
-        MEM_COMMIT | MEM_RESERVE,
-        PAGE_EXECUTE_READWRITE
-    ) }?;
+    let shellcode_buf = unsafe {
+        valloc(
+            &host_proc,
+            None,
+            shellcode_text.len(),
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        )
+    }?;
 
-    unsafe { write_proc_mem(
-        &host_proc,
-        shellcode_text.as_ptr() as _,
-        shellcode_buf, 
-        shellcode_text.len()
-    ) }?;
+    unsafe {
+        write_proc_mem(
+            &host_proc,
+            shellcode_text.as_ptr() as _,
+            shellcode_buf,
+            shellcode_text.len(),
+        )
+    }?;
 
-    debug!("shellcode entry point {:#x}", shellcode_nt_headers.optional_header.address_of_entry_point.0);
-    let entry_pt_offset = (shellcode_nt_headers.optional_header.address_of_entry_point.0 - shellcode_text_section.virtual_address.0) as isize;
-    let shellcode_entry_pt = unsafe { mem::transmute((shellcode_buf as *const u8).offset(entry_pt_offset)) };
-    debug!("entry point offset: {:#x}, entering at: {:?}", entry_pt_offset, shellcode_entry_pt as *const c_void);
-    let h_thread = unsafe { CreateRemoteThread(
-        host_proc.raw(),
-        0 as _,
-        0, // stack
-        Some(shellcode_entry_pt),
-        inj_img_buf as _,
-        0,
-        0 as _,
-    ) }; 
+    debug!(
+        "shellcode entry point {:#x}",
+        shellcode_nt_headers
+            .optional_header
+            .address_of_entry_point
+            .0
+    );
+    let entry_pt_offset = (shellcode_nt_headers
+        .optional_header
+        .address_of_entry_point
+        .0
+        - shellcode_text_section.virtual_address.0) as isize;
+    let shellcode_entry_pt =
+        unsafe { mem::transmute((shellcode_buf as *const u8).offset(entry_pt_offset)) };
+    debug!(
+        "entry point offset: {:#x}, entering at: {:?}",
+        entry_pt_offset, shellcode_entry_pt as *const c_void
+    );
+    let h_thread = unsafe {
+        CreateRemoteThread(
+            host_proc.raw(),
+            0 as _,
+            0, // stack
+            Some(shellcode_entry_pt),
+            inj_img_buf as _,
+            0,
+            0 as _,
+        )
+    };
 
     Ok(())
 }

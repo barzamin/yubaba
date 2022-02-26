@@ -6,10 +6,15 @@
 compile_error!("Platform not supported!");
 
 use core::arch::asm;
-use core::ptr;
 use core::mem;
+use core::ptr;
 
-use crate::win32::{LPVOID, DWORD, WORD, BOOL, c_void, c_char, IMAGE_EXPORT_DIRECTORY, IMAGE_DIRECTORY_ENTRY_EXPORT, DLL_PROCESS_ATTACH, IMAGE_IMPORT_DESCRIPTOR, IMAGE_DOS_HEADER, IMAGE_NT_HEADERS32, IMAGE_DIRECTORY_ENTRY_IMPORT, CHAR, ULONG_PTR, IMAGE_IMPORT_BY_NAME, LPCSTR, PEB, LDR_DATA_TABLE_ENTRY};
+use crate::win32::{
+    c_char, c_void, BOOL, CHAR, DLL_PROCESS_ATTACH, DWORD, IMAGE_DIRECTORY_ENTRY_EXPORT,
+    IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_DOS_HEADER, IMAGE_EXPORT_DIRECTORY, IMAGE_IMPORT_BY_NAME,
+    IMAGE_IMPORT_DESCRIPTOR, IMAGE_NT_HEADERS32, LDR_DATA_TABLE_ENTRY, LPCSTR, LPVOID, PEB,
+    ULONG_PTR, WORD,
+};
 
 mod win32;
 
@@ -43,7 +48,7 @@ const fn fx_hash(input: &[u8]) -> u32 {
 const HASH_LOADLIBRARYA: u32 = fx_hash(b"LoadLibraryA");
 const HASH_GETPROCADDRESS: u32 = fx_hash(b"GetProcAddress");
 
-unsafe fn fx_hash_buf(mut input: *const c_char) -> u32{
+unsafe fn fx_hash_buf(mut input: *const c_char) -> u32 {
     let mut state = 0;
     while *input != 0 {
         state = fx_hash_step(state, *input as u32);
@@ -72,8 +77,8 @@ unsafe fn get_proc_address(dll: *const u8, target_hash: u32) -> *const c_void {
 
     let optional_header = &nt_headers.OptionalHeader;
     let export_dir_entry = &optional_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT as usize];
-    let export_dir = &*(dll.add(export_dir_entry.VirtualAddress as usize) as *const IMAGE_EXPORT_DIRECTORY);
-
+    let export_dir =
+        &*(dll.add(export_dir_entry.VirtualAddress as usize) as *const IMAGE_EXPORT_DIRECTORY);
 
     let name_rva_table = dll.add(export_dir.AddressOfNames as usize) as *const DWORD;
     let ordinal_table = dll.add(export_dir.AddressOfNameOrdinals as usize) as *const WORD;
@@ -117,41 +122,50 @@ macro_rules! regdebug {
 macro_rules! breakme {
     () => {{
         asm!("int3");
-    }}
+    }};
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn _shellcode(base: *const u8) {
     let modlist = &(*((*get_peb()).Ldr)).InMemoryOrderModuleList;
-    let mod_kernel32 = &*((*((*(modlist.Flink)).Flink)).Flink.offset(-1) as *mut LDR_DATA_TABLE_ENTRY);
+    let mod_kernel32 =
+        &*((*((*(modlist.Flink)).Flink)).Flink.offset(-1) as *mut LDR_DATA_TABLE_ENTRY);
     let kernel32_dll = mod_kernel32.DllBase as *const u8;
 
-    let proc_loadlibrarya: win32::LoadLibraryA     = mem::transmute(get_proc_address(kernel32_dll, HASH_LOADLIBRARYA));
-    let proc_getprocaddress: win32::GetProcAddress = mem::transmute(get_proc_address(kernel32_dll, HASH_GETPROCADDRESS));
+    let proc_loadlibrarya: win32::LoadLibraryA =
+        mem::transmute(get_proc_address(kernel32_dll, HASH_LOADLIBRARYA));
+    let proc_getprocaddress: win32::GetProcAddress =
+        mem::transmute(get_proc_address(kernel32_dll, HASH_GETPROCADDRESS));
 
     let dos_header = &*(base as *const IMAGE_DOS_HEADER);
-    let nt_headers: &IMAGE_NT_HEADERS32 = &*(base.offset(dos_header.e_lfanew as isize) as *const IMAGE_NT_HEADERS32);
+    let nt_headers: &IMAGE_NT_HEADERS32 =
+        &*(base.offset(dos_header.e_lfanew as isize) as *const IMAGE_NT_HEADERS32);
     let optional_header = &nt_headers.OptionalHeader;
 
     let import_dir_entry = &optional_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT as usize];
 
     if import_dir_entry.Size > 0 {
-        let mut import_descr = base.add(import_dir_entry.VirtualAddress as usize) as *const IMAGE_IMPORT_DESCRIPTOR;
-        
+        let mut import_descr =
+            base.add(import_dir_entry.VirtualAddress as usize) as *const IMAGE_IMPORT_DESCRIPTOR;
+
         while (*import_descr).Name != 0 {
             let modname: *const CHAR = base.add((*import_descr).Name as usize) as _;
             let dll = proc_loadlibrarya(modname);
 
-            let mut thunk_ref = base.add((*import_descr).OriginalFirstThunk as usize) as *mut ULONG_PTR;
-            let mut func_ref  = base.add((*import_descr).FirstThunk as usize) as *mut ULONG_PTR;
+            let mut thunk_ref =
+                base.add((*import_descr).OriginalFirstThunk as usize) as *mut ULONG_PTR;
+            let mut func_ref = base.add((*import_descr).FirstThunk as usize) as *mut ULONG_PTR;
             if thunk_ref.is_null() {
                 thunk_ref = func_ref;
             }
 
             while *thunk_ref != 0 {
-            if IMAGE_SNAP_BY_ORDINAL32(*thunk_ref as u32) { // ordinal thunk
-                    *func_ref = proc_getprocaddress(dll, mem::transmute(*thunk_ref & 0xffff)) as ULONG_PTR;
-                } else { // string thunk
+                if IMAGE_SNAP_BY_ORDINAL32(*thunk_ref as u32) {
+                    // ordinal thunk
+                    *func_ref =
+                        proc_getprocaddress(dll, mem::transmute(*thunk_ref & 0xffff)) as ULONG_PTR;
+                } else {
+                    // string thunk
                     let namedimport = &*(base.add(*thunk_ref) as *const IMAGE_IMPORT_BY_NAME);
                     *func_ref = proc_getprocaddress(dll, &namedimport.Name as LPCSTR) as ULONG_PTR;
                 }
@@ -166,6 +180,7 @@ pub unsafe extern "C" fn _shellcode(base: *const u8) {
 
     // TODO TLS
 
-    let dllmain: DllEntryPoint = mem::transmute(base.add(optional_header.AddressOfEntryPoint as usize));
+    let dllmain: DllEntryPoint =
+        mem::transmute(base.add(optional_header.AddressOfEntryPoint as usize));
     dllmain(base as *mut _, DLL_PROCESS_ATTACH, 0 as _);
 }

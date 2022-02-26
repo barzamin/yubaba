@@ -1,7 +1,16 @@
 use std::{ffi::c_void, ptr};
 
 use tracing::trace;
-use windows::Win32::{System::{Diagnostics::Debug::WriteProcessMemory, Memory::{VIRTUAL_ALLOCATION_TYPE, PAGE_PROTECTION_FLAGS, VirtualAllocEx, VirtualFreeEx, MEM_RELEASE}}, Foundation::{GetLastError, WIN32_ERROR}};
+use windows::Win32::{
+    Foundation::{GetLastError, WIN32_ERROR},
+    System::{
+        Diagnostics::Debug::WriteProcessMemory,
+        Memory::{
+            VirtualAllocEx, VirtualFreeEx, MEM_RELEASE, PAGE_PROTECTION_FLAGS,
+            VIRTUAL_ALLOCATION_TYPE,
+        },
+    },
+};
 
 use crate::win32::Handle;
 
