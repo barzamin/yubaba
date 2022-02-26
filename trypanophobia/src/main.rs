@@ -200,12 +200,13 @@ fn main() -> color_eyre::eyre::Result<()> {
 
     debug!("shellcode entry point {:#x}", shellcode_nt_headers.optional_header.address_of_entry_point.0);
     let entry_pt_offset = (shellcode_nt_headers.optional_header.address_of_entry_point.0 - shellcode_text_section.virtual_address.0) as isize;
-    debug!("entry point offset: {:#x}", entry_pt_offset);
+    let shellcode_entry_pt = unsafe { mem::transmute((shellcode_buf as *const u8).offset(entry_pt_offset)) };
+    debug!("entry point offset: {:#x}, entering at: {:?}", entry_pt_offset, shellcode_entry_pt as *const c_void);
     let h_thread = unsafe { CreateRemoteThread(
         host_proc.raw(),
         0 as _,
         0, // stack
-        Some(mem::transmute((shellcode_buf as *const u8).offset(entry_pt_offset))),
+        Some(shellcode_entry_pt),
         inj_img_buf as _,
         0,
         0 as _,

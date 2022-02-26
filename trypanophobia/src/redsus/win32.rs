@@ -42,8 +42,8 @@ pub enum HINSTANCE__ {}
 pub type HINSTANCE = *mut HINSTANCE__;
 pub type HMODULE = HINSTANCE;
 pub type LPVOID = *mut c_void;
-pub type LoadLibraryA = unsafe extern "system" fn(LPCSTR) -> HMODULE;
-pub type GetProcAddress = unsafe extern "system" fn(HMODULE, LPCSTR) -> LPVOID;
+pub type LoadLibraryA = unsafe extern "stdcall" fn(LPCSTR) -> HMODULE;
+pub type GetProcAddress = unsafe extern "stdcall" fn(HMODULE, LPCSTR) -> LPVOID;
 
 #[repr(C)]
 pub struct IMAGE_DOS_HEADER {
