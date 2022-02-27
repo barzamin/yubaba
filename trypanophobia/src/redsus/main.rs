@@ -11,8 +11,9 @@ use core::ptr;
 
 use crate::win32::{
     c_char, c_void, BOOL, CHAR, DLL_PROCESS_ATTACH, DWORD, IMAGE_DIRECTORY_ENTRY_EXPORT,
-    IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_DOS_HEADER, IMAGE_EXPORT_DIRECTORY, IMAGE_IMPORT_BY_NAME,
-    IMAGE_IMPORT_DESCRIPTOR, IMAGE_NT_HEADERS32, LDR_DATA_TABLE_ENTRY, LPCSTR, LPVOID, PEB,
+    IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_DIRECTORY_ENTRY_TLS, IMAGE_DOS_HEADER,
+    IMAGE_EXPORT_DIRECTORY, IMAGE_IMPORT_BY_NAME, IMAGE_IMPORT_DESCRIPTOR, IMAGE_NT_HEADERS32,
+    IMAGE_TLS_DIRECTORY32, LDR_DATA_TABLE_ENTRY, LPCSTR, LPVOID, PEB, PIMAGE_TLS_CALLBACK,
     ULONG_PTR, WORD,
 };
 
@@ -70,7 +71,6 @@ fn get_peb() -> *const PEB {
     peb
 }
 
-// #[inline(always)] // for some reason stuff crashes if this isn't inline. bleh it's fine?
 unsafe fn get_proc_address(dll: *const u8, target_hash: u32) -> *const c_void {
     let dos_header = &*(dll as *const IMAGE_DOS_HEADER);
     let nt_headers = &*(dll.add(dos_header.e_lfanew as usize) as *const IMAGE_NT_HEADERS32);
@@ -178,9 +178,19 @@ pub unsafe extern "C" fn _shellcode(base: *const u8) {
         }
     }
 
-    // TODO TLS
+    let tls_dir_entry = &optional_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS as usize];
+    if tls_dir_entry.Size > 0 {
+        let tls_dir =
+            &*(base.add(tls_dir_entry.VirtualAddress as usize) as *const IMAGE_TLS_DIRECTORY32);
+        let mut callback = tls_dir.AddressOfCallBacks as *const PIMAGE_TLS_CALLBACK;
+        while *(callback as *const DWORD) != 0 {
+            (*callback)(base as *mut _, DLL_PROCESS_ATTACH, ptr::null_mut());
+
+            callback = callback.add(1);
+        }
+    }
 
     let dllmain: DllEntryPoint =
         mem::transmute(base.add(optional_header.AddressOfEntryPoint as usize));
-    dllmain(base as *mut _, DLL_PROCESS_ATTACH, 0 as _);
+    dllmain(base as *mut _, DLL_PROCESS_ATTACH, ptr::null_mut());
 }

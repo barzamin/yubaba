@@ -44,6 +44,8 @@ pub type HMODULE = HINSTANCE;
 pub type LPVOID = *mut c_void;
 pub type LoadLibraryA = unsafe extern "stdcall" fn(LPCSTR) -> HMODULE;
 pub type GetProcAddress = unsafe extern "stdcall" fn(HMODULE, LPCSTR) -> LPVOID;
+pub type PIMAGE_TLS_CALLBACK =
+    unsafe extern "stdcall" fn(DllHandle: PVOID, Reason: DWORD, Reserved: PVOID) -> ();
 
 #[repr(C)]
 pub struct IMAGE_DOS_HEADER {
@@ -238,4 +240,14 @@ pub struct IMAGE_EXPORT_DIRECTORY {
     pub AddressOfFunctions: DWORD,
     pub AddressOfNames: DWORD,
     pub AddressOfNameOrdinals: DWORD,
+}
+
+#[repr(C)]
+pub struct IMAGE_TLS_DIRECTORY32 {
+    pub StartAddressOfRawData: DWORD,
+    pub EndAddressOfRawData: DWORD,
+    pub AddressOfIndex: DWORD,
+    pub AddressOfCallBacks: DWORD,
+    pub SizeOfZeroFill: DWORD,
+    pub Characteristics: DWORD,
 }
