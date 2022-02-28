@@ -2,8 +2,6 @@
 members = [
     "trypanophobia",
     "bostonian",
-]
-
-exclude = [
-    "redsus",
+    "catboy",
+    "dril",
 ]

@@ -21,7 +21,7 @@ pub extern "stdcall" fn DllMain(dll_handle: HINSTANCE, reason: u32, _reserved: c
         unsafe {
             MessageBoxA(
                 None,
-                PSTR(b"injected!\0".as_ptr()),
+                PSTR(b"catboy injected!\0".as_ptr()),
                 PSTR(b"woof!\0".as_ptr()),
                 MB_OK,
             );

@@ -3,11 +3,14 @@
 #![allow(bad_style)]
 
 #[cfg(not(all(target_env = "msvc", target_arch = "x86", target_os = "windows")))]
-compile_error!("Platform not supported!");
+compile_error!("need to build as 32-bit win pe via msvc");
 
 use core::arch::asm;
 use core::mem;
 use core::ptr;
+
+mod win32;
+mod hash;
 
 use crate::win32::{
     c_char, c_void, BOOL, CHAR, DLL_PROCESS_ATTACH, DWORD, IMAGE_DIRECTORY_ENTRY_EXPORT,
@@ -17,7 +20,7 @@ use crate::win32::{
     ULONG_PTR, WORD,
 };
 
-mod win32;
+use crate::hash::{fx_hash, fx_hash_buf};
 
 type DllEntryPoint = unsafe extern "system" fn(LPVOID, DWORD, LPVOID) -> BOOL;
 
@@ -31,32 +34,8 @@ fn IMAGE_SNAP_BY_ORDINAL32(ordinal: u32) -> bool {
     (ordinal & IMAGE_ORDINAL_FLAG32) != 0
 }
 
-const fn fx_hash_step(state: u32, x: u32) -> u32 {
-    const K: u32 = 0x517cc1b7;
-    (state.rotate_left(5) ^ x).wrapping_mul(K)
-}
-
-const fn fx_hash(input: &[u8]) -> u32 {
-    let mut state = 0;
-    let mut i = 0;
-    while i < input.len() {
-        state = fx_hash_step(state, input[i] as u32);
-        i += 1;
-    }
-    state
-}
-
 const HASH_LOADLIBRARYA: u32 = fx_hash(b"LoadLibraryA");
 const HASH_GETPROCADDRESS: u32 = fx_hash(b"GetProcAddress");
-
-unsafe fn fx_hash_buf(mut input: *const c_char) -> u32 {
-    let mut state = 0;
-    while *input != 0 {
-        state = fx_hash_step(state, *input as u32);
-        input = input.add(1);
-    }
-    state
-}
 
 fn get_peb() -> *const PEB {
     let peb: *mut PEB;
@@ -106,16 +85,6 @@ macro_rules! regdebug {
             in(reg) $x,
         );
     }};
-
-    // ($x:expr, $y:expr) => {{
-    //     asm!(
-    //         "mov eax, {0}",
-    //         "mov ecx, {1}",
-    //         "int3",
-    //         in(reg) $x,
-    //         in(reg) $y,
-    //     );
-    // }};
 }
 
 #[allow(unused_macros)]

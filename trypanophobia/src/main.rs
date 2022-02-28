@@ -100,7 +100,7 @@ fn main() -> color_eyre::eyre::Result<()> {
     let inj_img_buf = unsafe {
         valloc(
             &host_proc,
-            None, //Some(pe_opt_hdr.windows_fields.image_base as *const c_void),
+            None,
             img_size,
             MEM_COMMIT | MEM_RESERVE,
             PAGE_READWRITE,
@@ -181,9 +181,6 @@ fn main() -> color_eyre::eyre::Result<()> {
     let shellcode_text = shellcode_text_section
         .read(&shellcode_pe)
         .map_err(|e| eyre!("{}", e))?;
-    // TODO
-    // std::fs::write(redsus_out_dir.join("redsus.bin"),
-    //     &data[start..])?;
 
     let shellcode_buf = unsafe {
         valloc(
