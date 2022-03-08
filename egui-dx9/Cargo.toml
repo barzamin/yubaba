@@ -1,0 +1,25 @@
+[package]
+name = "egui-dx9"
+authors = ["3moon <erin@hecke.rs>"]
+description = "egui renderer/backend for d3d9"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.17.0"
+epi = "0.17.0"
+thiserror = "1.0.30"
+
+[dependencies.windows]
+version = "0.33.0"
+features = [
+    "alloc",
+    "Win32_Foundation",
+    "Win32_System_SystemServices",
+    "Win32_Graphics_Direct3D9",
+    "Win32_Graphics_Gdi",
+]
+
+[dev-dependencies]
+raw-window-handle = "0.4.2"
+winit = "0.26.1"
