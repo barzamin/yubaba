@@ -77,7 +77,13 @@ where
         self.backing.lock(range)
     }
 
-    // pub fn upload()
+    pub fn raw(&self) -> &T::RawBuffer {
+        self.backing.raw()
+    }
+
+    pub fn raw_mut(&mut self) -> &mut T::RawBuffer {
+        self.backing.raw_mut()
+    }
 }
 
 pub(crate) struct VertexBuffer {

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, mem, ptr};
 
-use buffer::{CustomVertex, IndexBuffer, Resizing, VertexBuffer};
+use buffer::{CustomVertex, IndexBuffer, Resizing, VertexBuffer, D3DFVF_CUSTOMVERTEX};
 use egui::{epaint::ClippedShape, ClippedMesh, TextureId};
 use windows::Win32::{
     Foundation::RECT,
@@ -237,6 +237,17 @@ impl<'a> EguiDx9<'a> {
             }
 
             unsafe {
+                // set up vb and ib for draw
+                self.d3ddevice.SetStreamSource(
+                    0,
+                    self.vertex_buffer.raw(),
+                    0,
+                    mem::size_of::<CustomVertex>() as u32,
+                )?;
+                self.d3ddevice.SetIndices(self.index_buffer.raw())?;
+                self.d3ddevice.SetFVF(D3DFVF_CUSTOMVERTEX)?;
+
+                // do the (clipped) draw
                 self.d3ddevice.SetScissorRect(&draw.scissors)?;
                 self.d3ddevice.DrawIndexedPrimitive(
                     D3DPT_TRIANGLELIST,
