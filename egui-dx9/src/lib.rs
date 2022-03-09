@@ -1,6 +1,6 @@
 use std::{collections::HashMap, mem, ptr};
 
-use buffer::CustomVertex;
+use buffer::{CustomVertex, IndexBuffer, Resizing, VertexBuffer};
 use egui::{epaint::ClippedShape, ClippedMesh, TextureId};
 use windows::Win32::{
     Foundation::RECT,
@@ -12,6 +12,9 @@ use windows::Win32::{
 
 mod buffer;
 mod locks;
+
+const DEFAULT_VERTEX_BUFFER_SIZE: usize = 5000;
+const DEFAULT_INDEX_BUFFER_SIZE: usize = 1000 * 3;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -26,16 +29,6 @@ pub enum Error {
 
     #[error("attempted to remove texture id {0:?} which does not exist")]
     NoSuchTexture(TextureId),
-}
-
-pub struct EguiDx9<'a> {
-    egui_ctx: egui::Context,
-    d3ddevice: &'a IDirect3DDevice9,
-
-    shapes: Vec<ClippedShape>,
-    textures_delta: egui::TexturesDelta,
-
-    textures: Textures,
 }
 
 struct Textures {
@@ -79,65 +72,23 @@ struct CoalescedDraw {
     pub scissors: RECT,
 }
 
-fn upload_geometry(
-    // TODO DONT PASS LOCKED THINGS IN
-    mut vb: &mut [CustomVertex],
-    mut ib: &mut [u32],
-    clipped_meshes: &[ClippedMesh],
-) -> Result<Vec<CoalescedDraw>, Error> {
-    let mut vertex_offset = 0;
-    let mut index_offset = 0;
-    let mut draws = Vec::new();
-    for clipped_mesh in clipped_meshes {
-        let ClippedMesh(scissor, shape) = clipped_mesh;
+pub struct EguiDx9<'a> {
+    egui_ctx: egui::Context,
+    d3ddevice: &'a IDirect3DDevice9,
 
-        // TODO(petra): check coordinate system
-        let scissor_rect = RECT {
-            left: scissor.left() as i32,
-            top: scissor.top() as i32,
-            right: scissor.right() as i32,
-            bottom: scissor.bottom() as i32,
-        };
+    // egui frame state
+    shapes: Vec<ClippedShape>,
+    textures_delta: egui::TexturesDelta,
 
-        let vertex_count = shape.vertices.len();
-        let index_count = shape.indices.len();
-        let tri_count = index_count / 3;
-        draws.push(CoalescedDraw {
-            vertex_offset,
-            index_offset,
-            vertex_count,
-            tri_count,
-            texture_id: shape.texture_id,
-            scissors: scissor_rect,
-        });
-        vertex_offset += vertex_count;
-        index_offset += index_count;
-
-        for (vert, dest) in shape.vertices.iter().zip(vb.iter_mut()) {
-            *dest = CustomVertex {
-                pos: [vert.pos.x, vert.pos.y, 0.], // z=0 for all egui meshes
-                col: [
-                    vert.color.a(),
-                    vert.color.r(),
-                    vert.color.g(),
-                    vert.color.b(),
-                ],
-                uv: [vert.uv.x, vert.uv.y],
-            };
-        }
-        ib[..shape.indices.len()].copy_from_slice(&shape.indices);
-
-        // "move pointers" so we write after the last mesh we did
-        vb = &mut vb[vertex_count..];
-        ib = &mut ib[index_count..];
-    }
-
-    Ok(draws)
+    // owned d3d resources
+    textures: Textures,
+    vertex_buffer: Resizing<VertexBuffer>,
+    index_buffer: Resizing<IndexBuffer>,
 }
 
 impl<'a> EguiDx9<'a> {
-    pub fn new(device: &'a IDirect3DDevice9) -> Self {
-        Self {
+    pub fn new(device: &'a IDirect3DDevice9) -> Result<Self, Error> {
+        Ok(Self {
             egui_ctx: Default::default(),
             d3ddevice: device,
 
@@ -145,7 +96,10 @@ impl<'a> EguiDx9<'a> {
             textures_delta: Default::default(),
 
             textures: Textures::new(),
-        }
+
+            vertex_buffer: Resizing::<_>::with_capacity(device, DEFAULT_VERTEX_BUFFER_SIZE)?,
+            index_buffer: Resizing::<_>::with_capacity(device, DEFAULT_INDEX_BUFFER_SIZE)?,
+        })
     }
 
     pub fn run(&mut self, run_ui: impl FnMut(&egui::Context)) -> bool {
@@ -187,6 +141,74 @@ impl<'a> EguiDx9<'a> {
         Ok(())
     }
 
+    fn upload_geometry(
+        &mut self,
+        clipped_meshes: &[ClippedMesh],
+    ) -> Result<Vec<CoalescedDraw>, Error> {
+        // compute total sizes of geometry so we know whether we have to resize
+        let total_vertices = clipped_meshes
+            .iter()
+            .map(|mesh| mesh.1.vertices.len())
+            .sum();
+        let total_indices = clipped_meshes.iter().map(|mesh| mesh.1.indices.len()).sum();
+
+        // lock (and recreate for range size if necessary! thanks Resizing<T>)
+        let mut vb = self.vertex_buffer.lock(self.d3ddevice, 0..total_vertices)?;
+        let mut ib = self.index_buffer.lock(self.d3ddevice, 0..total_indices)?;
+
+        let mut vertex_offset = 0;
+        let mut index_offset = 0;
+        let mut draws = Vec::new();
+        for clipped_mesh in clipped_meshes {
+            let ClippedMesh(scissor, shape) = clipped_mesh;
+
+            // TODO(petra): check coordinate system
+            let scissor_rect = RECT {
+                left: scissor.left() as i32,
+                top: scissor.top() as i32,
+                right: scissor.right() as i32,
+                bottom: scissor.bottom() as i32,
+            };
+
+            // push draw call metadata to a list we'll output after upload is done
+            let vertex_count = shape.vertices.len();
+            let index_count = shape.indices.len();
+            let tri_count = index_count / 3;
+            draws.push(CoalescedDraw {
+                vertex_offset,
+                index_offset,
+                vertex_count,
+                tri_count,
+                texture_id: shape.texture_id,
+                scissors: scissor_rect,
+            });
+
+            // copy this mesh's geometry to the vb and ib
+            for (vert, dest) in shape.vertices[vertex_offset..vertex_offset + vertex_count]
+                .iter()
+                .zip(vb.iter_mut())
+            {
+                *dest = CustomVertex {
+                    pos: [vert.pos.x, vert.pos.y, 0.], // z=0 for all egui meshes
+                    col: [
+                        vert.color.a(),
+                        vert.color.r(),
+                        vert.color.g(),
+                        vert.color.b(),
+                    ],
+                    uv: [vert.uv.x, vert.uv.y],
+                };
+            }
+            ib[index_offset..index_offset + index_count].copy_from_slice(&shape.indices);
+
+            // and move on so we don't write over our own data
+            vertex_offset += vertex_count;
+            index_offset += index_count;
+        }
+
+        Ok(draws)
+    }
+
     pub fn paint(&mut self /* , dimensions: [u32; 2] */) -> Result<(), Error> {
         let shapes = mem::take(&mut self.shapes);
         let mut textures_delta = std::mem::take(&mut self.textures_delta);
@@ -201,7 +223,7 @@ impl<'a> EguiDx9<'a> {
 
         // scan through meshes and upload merged vert/index lists so we only upload
         // a single vtx buffer and a single idx buffer.
-        let draws = upload_geometry(todo!(), todo!(), todo!())?;
+        let draws = self.upload_geometry(&clipped_meshes)?;
 
         let mut last_tex = None;
         for draw in draws {

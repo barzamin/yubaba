@@ -60,10 +60,27 @@ where
         })
     }
 
+    pub fn lock(
+        &mut self,
+        device: &IDirect3DDevice9,
+        range: Range<usize>,
+    ) -> Result<DxLockGuard<T::RawBuffer, &mut [T::Element]>, Error> {
+        if range.len() > self.backing.size() {
+            // need to grow
+            // self.backing.
+            drop(mem::replace(
+                &mut self.backing,
+                T::allocate(device, range.len() * 2)?, // double requested size
+            ));
+        }
+
+        self.backing.lock(range)
+    }
+
     // pub fn upload()
 }
 
-struct VertexBuffer {
+pub(crate) struct VertexBuffer {
     size: usize,
     buffer: IDirect3DVertexBuffer9,
 }
@@ -131,7 +148,7 @@ impl DxBuffer for VertexBuffer {
     }
 }
 
-struct IndexBuffer {
+pub(crate) struct IndexBuffer {
     size: usize,
     buffer: IDirect3DIndexBuffer9,
 }
