@@ -1,5 +1,7 @@
-use std::ptr;
+use std::{ptr, rc::Rc};
 
+use egui_dx9::EguiDx9;
+use ouroboros::self_referencing;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 use windows::Win32::{
     Foundation::HWND,
@@ -19,6 +21,14 @@ use winit::{
 
 const WIN_WIDTH: u32 = 800;
 const WIN_HEIGHT: u32 = 800;
+
+#[self_referencing]
+struct Bundle {
+    pub device: IDirect3DDevice9,
+    #[borrows(device)]
+    #[covariant]
+    pub egui_backend: EguiDx9<'this>,
+}
 
 fn main() {
     let event_loop = EventLoop::new();
@@ -71,35 +81,41 @@ fn main() {
         )
     }
     .expect("couldn't create d3d9 device");
+
     let device = device.expect("d3d9 device was null");
 
-    let egui_backend = egui_dx9::EguiDx9::new(&device);
+    let mut bundle = BundleBuilder {
+        device,
+        egui_backend_builder: |device: &IDirect3DDevice9| egui_dx9::EguiDx9::new(device).expect("couldnt initialize the egui dx9 backend"),
+    }.build();
+    let mut clear_color = [0.1, 0.1, 0.1];
 
-    event_loop.run(move |event, _, ctlflow| match event {
+    event_loop.run(
+        move |event, _, ctlflow| match event {
         Event::MainEventsCleared => {
             window.request_redraw();
         }
         Event::RedrawRequested(_) => unsafe {
-            let needs_repaint = egui_backend.run(|egui_ctx| {
+            let needs_repaint = bundle.with_egui_backend_mut(|egui_backend| egui_backend.run(|egui_ctx| {
                 egui::SidePanel::left("my_side_panel").show(egui_ctx, |ui| {
                     ui.heading("Hello World!");
                     if ui.button("Quit").clicked() {
-                        quit = true;
+                        // quit = true;
                     }
                     ui.color_edit_button_rgb(&mut clear_color);
                 });
-            });
+            }));
 
-            device
+            bundle.borrow_device()
                 .Clear(0, ptr::null(), D3DCLEAR_TARGET as _, 0xffa0_0aaa, 1.0, 0)
                 .unwrap();
 
-            device.BeginScene().unwrap();
+            bundle.borrow_device().BeginScene().unwrap();
 
-            egui_backend.paint();
+            bundle.with_egui_backend_mut(|egui_backend| egui_backend.paint());
 
-            device.EndScene().unwrap();
-            device
+            bundle.borrow_device().EndScene().unwrap();
+            bundle.borrow_device()
                 .Present(ptr::null(), ptr::null(), None, ptr::null())
                 .unwrap();
         },

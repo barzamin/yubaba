@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 egui = "0.17.0"
 epi = "0.17.0"
+ouroboros = "0.14.2"
 thiserror = "1.0.30"
 
 [dependencies.windows]
@@ -17,6 +18,7 @@ features = [
     "Win32_Foundation",
     "Win32_System_SystemServices",
     "Win32_Graphics_Direct3D9",
+    "Win32_Graphics_Direct3D",
     "Win32_Graphics_Gdi",
 ]
 

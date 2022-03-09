@@ -4,10 +4,20 @@ use buffer::{CustomVertex, IndexBuffer, Resizing, VertexBuffer, D3DFVF_CUSTOMVER
 use egui::{epaint::ClippedShape, ClippedMesh, TextureId};
 use windows::Win32::{
     Foundation::RECT,
-    Graphics::Direct3D9::{
-        IDirect3DBaseTexture9, IDirect3DDevice9, IDirect3DIndexBuffer9, IDirect3DVertexBuffer9,
-        D3DCULL_NONE, D3DPT_TRIANGLELIST, D3DRS_CULLMODE, D3DVIEWPORT9,
+    Graphics::{
+        Direct3D::{D3DMATRIX, D3DMATRIX_0},
+        Direct3D9::{
+            IDirect3DBaseTexture9, IDirect3DDevice9, IDirect3DIndexBuffer9, IDirect3DVertexBuffer9,
+            D3DBLENDOP_ADD, D3DBLEND_INVSRCALPHA, D3DBLEND_SRCALPHA, D3DCULL_NONE,
+            D3DPT_TRIANGLELIST, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP,
+            D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_FOGENABLE, D3DRS_LIGHTING,
+            D3DRS_SCISSORTESTENABLE, D3DRS_SHADEMODE, D3DRS_SRCBLEND, D3DRS_ZENABLE,
+            D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER, D3DSHADE_GOURAUD, D3DTEXF_LINEAR,
+            D3DTOP_MODULATE, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2, D3DTSS_ALPHAOP, D3DTSS_COLORARG1,
+            D3DTSS_COLORARG2, D3DTSS_COLOROP, D3DVIEWPORT9, D3DTS_TEXTURE4, D3DTRANSFORMSTATETYPE, D3DTS_VIEW, D3DTS_PROJECTION,
+        },
     },
+    System::SystemServices::{D3DTA_DIFFUSE, D3DTA_TEXTURE},
 };
 
 mod buffer;
@@ -15,6 +25,14 @@ mod locks;
 
 const DEFAULT_VERTEX_BUFFER_SIZE: usize = 5000;
 const DEFAULT_INDEX_BUFFER_SIZE: usize = 1000 * 3;
+
+static MAT_IDENTITY: D3DMATRIX = D3DMATRIX {
+    Anonymous: D3DMATRIX_0 {
+        m: [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+    },
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -137,6 +155,55 @@ impl<'a> EguiDx9<'a> {
         // "egui is NOT consistent with what winding order it uses, so turn off backface culling."
         self.d3ddevice
             .SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE.0)?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_LIGHTING, false.into())?;
+        self.d3ddevice.SetRenderState(D3DRS_ZENABLE, false.into())?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_ALPHABLENDENABLE, true.into())?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_ALPHATESTENABLE, false.into())?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD.0)?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA.0)?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA.0)?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_SCISSORTESTENABLE, true.into())?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD.0 as _)?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_FOGENABLE, false.into())?;
+        self.d3ddevice
+            .SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE.0 as _)?;
+        self.d3ddevice
+            .SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE as _)?;
+        self.d3ddevice
+            .SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE as _)?;
+        self.d3ddevice
+            .SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as _)?;
+        self.d3ddevice
+            .SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE as _)?;
+        self.d3ddevice
+            .SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE as _)?;
+        self.d3ddevice
+            .SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR.0 as _)?;
+        self.d3ddevice
+            .SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR.0 as _)?;
+
+        // TODO(petra) BIG TODO MAKE THIS NOT 0
+        let mat_proj = D3DMATRIX {
+            Anonymous: D3DMATRIX_0 {
+                m: [
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+            },
+        };
+        // #define D3DTS_WORLDMATRIX(index) (D3DTRANSFORMSTATETYPE)(index + 256)
+        // #define D3DTS_WORLD  D3DTS_WORLDMATRIX(0)
+        self.d3ddevice.SetTransform(D3DTRANSFORMSTATETYPE(256), &MAT_IDENTITY)?;
+        self.d3ddevice.SetTransform(D3DTS_VIEW, &MAT_IDENTITY)?;
+        self.d3ddevice.SetTransform(D3DTS_PROJECTION, &mat_proj)?;
 
         Ok(())
     }
