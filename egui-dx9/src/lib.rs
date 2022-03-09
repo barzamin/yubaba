@@ -1,23 +1,17 @@
 use std::{collections::HashMap, mem, ptr};
 
+use buffer::CustomVertex;
 use egui::{epaint::ClippedShape, ClippedMesh, TextureId};
 use windows::Win32::{
     Foundation::RECT,
     Graphics::Direct3D9::{
         IDirect3DBaseTexture9, IDirect3DDevice9, IDirect3DIndexBuffer9, IDirect3DVertexBuffer9,
-        D3DFMT_INDEX32, D3DPOOL_DEFAULT, D3DPT_TRIANGLELIST, D3DUSAGE_DYNAMIC, D3DUSAGE_WRITEONLY, D3DVIEWPORT9, D3DRS_CULLMODE, D3DCULL_NONE,
+        D3DCULL_NONE, D3DPT_TRIANGLELIST, D3DRS_CULLMODE, D3DVIEWPORT9,
     },
-    System::SystemServices::{D3DFVF_DIFFUSE, D3DFVF_TEX1, D3DFVF_XYZ},
 };
 
-const D3DFVF_CUSTOMVERTEX: u32 = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1;
-
-#[repr(C)]
-struct CustomVertex {
-    pos: [f32; 3],
-    col: [u8; 4],
-    uv: [f32; 2],
-}
+mod buffer;
+mod locks;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -145,109 +139,6 @@ impl CoalescedGeometry {
     }
 }
 
-trait DxBuffer: Sized {
-    type RawBuffer;
-
-    fn allocate(device: &IDirect3DDevice9, max_size: usize) -> Result<Self, Error>;
-    fn size(&self) -> usize;
-    fn raw(&self) -> &Self::RawBuffer;
-    fn raw_mut(&mut self) -> &mut Self::RawBuffer;
-}
-
-struct VertexBuffer {
-    size: usize,
-    buffer: IDirect3DVertexBuffer9
-}
-
-impl VertexBuffer {
-    unsafe fn create_vtx_buf(
-        device: &IDirect3DDevice9,
-        vtx_count: usize,
-    ) -> Result<IDirect3DVertexBuffer9, Error> {
-        let mut vtx_buf: Option<IDirect3DVertexBuffer9> = None;
-        device.CreateVertexBuffer(
-            (vtx_count * mem::size_of::<CustomVertex>()) as u32,
-            mem::transmute(D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY),
-            D3DFVF_CUSTOMVERTEX,
-            D3DPOOL_DEFAULT,
-            &mut vtx_buf,
-            ptr::null_mut(),
-        )?;
-
-        vtx_buf.ok_or(Error::MissingVtxBuf)
-    }
-}
-
-impl DxBuffer for VertexBuffer {
-    type RawBuffer = IDirect3DVertexBuffer9;
-
-    fn size(&self) -> usize {
-        self.size
-    }
-
-    fn allocate(device: &IDirect3DDevice9, max_size: usize) -> Result<Self, Error> {
-        Ok(Self {
-            buffer: unsafe { Self::create_vtx_buf(device, max_size) }?,
-            size: max_size,
-        })
-    }
-
-    fn raw(&self) -> &Self::RawBuffer {
-        &self.buffer
-    }
-
-    fn raw_mut(&mut self) -> &mut Self::RawBuffer {
-        &mut self.buffer
-    }
-}
-
-struct IndexBuffer {
-    size: usize,
-    buffer: IDirect3DIndexBuffer9
-}
-
-impl IndexBuffer {
-    unsafe fn create_idx_buf(
-        device: &IDirect3DDevice9,
-        idx_count: usize,
-    ) -> Result<IDirect3DIndexBuffer9, Error> {
-        let mut idx_buf: Option<IDirect3DIndexBuffer9> = None;
-        device.CreateIndexBuffer(
-            (idx_count * mem::size_of::<u32>()) as u32,
-            mem::transmute(D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY),
-            D3DFMT_INDEX32,
-            D3DPOOL_DEFAULT,
-            &mut idx_buf,
-            ptr::null_mut(),
-        )?;
-
-        idx_buf.ok_or(Error::MissingIdxBuf)
-    }
-}
-
-impl DxBuffer for IndexBuffer {
-    type RawBuffer = IDirect3DIndexBuffer9;
-
-    fn size(&self) -> usize {
-        self.size
-    }
-
-    fn allocate(device: &IDirect3DDevice9, max_size: usize) -> Result<Self, Error> {
-        Ok(Self {
-            buffer: unsafe { Self::create_idx_buf(device, max_size) }?,
-            size: max_size,
-        })
-    }
-
-    fn raw(&self) -> &Self::RawBuffer {
-        &self.buffer
-    }
-
-    fn raw_mut(&mut self) -> &mut Self::RawBuffer {
-        &mut self.buffer
-    }
-}
-
 impl<'a> EguiDx9<'a> {
     pub fn new(device: &'a IDirect3DDevice9) -> Self {
         Self {
@@ -294,7 +185,8 @@ impl<'a> EguiDx9<'a> {
         self.d3ddevice.SetPixelShader(None)?;
         self.d3ddevice.SetVertexShader(None)?;
         // "egui is NOT consistent with what winding order it uses, so turn off backface culling."
-        self.d3ddevice.SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE.0)?;
+        self.d3ddevice
+            .SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE.0)?;
 
         Ok(())
     }
