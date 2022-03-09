@@ -79,64 +79,60 @@ struct CoalescedDraw {
     pub scissors: RECT,
 }
 
-struct CoalescedGeometry {
-    pub vertices: Vec<CustomVertex>,
-    pub indices: Vec<u32>,
-    pub draws: Vec<CoalescedDraw>,
-}
+fn upload_geometry(
+    // TODO DONT PASS LOCKED THINGS IN
+    mut vb: &mut [CustomVertex],
+    mut ib: &mut [u32],
+    clipped_meshes: &[ClippedMesh],
+) -> Result<Vec<CoalescedDraw>, Error> {
+    let mut vertex_offset = 0;
+    let mut index_offset = 0;
+    let mut draws = Vec::new();
+    for clipped_mesh in clipped_meshes {
+        let ClippedMesh(scissor, shape) = clipped_mesh;
 
-impl CoalescedGeometry {
-    pub fn from_clipped_meshes(clipped_meshes: &[ClippedMesh]) -> Self {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let mut draws = Vec::new();
-        for clipped_mesh in clipped_meshes {
-            let ClippedMesh(scissor, shape) = clipped_mesh;
+        // TODO(petra): check coordinate system
+        let scissor_rect = RECT {
+            left: scissor.left() as i32,
+            top: scissor.top() as i32,
+            right: scissor.right() as i32,
+            bottom: scissor.bottom() as i32,
+        };
 
-            // TODO(petra): check coordinate system
-            let scissor_rect = RECT {
-                left: scissor.left() as i32,
-                top: scissor.top() as i32,
-                right: scissor.right() as i32,
-                bottom: scissor.bottom() as i32,
+        let vertex_count = shape.vertices.len();
+        let index_count = shape.indices.len();
+        let tri_count = index_count / 3;
+        draws.push(CoalescedDraw {
+            vertex_offset,
+            index_offset,
+            vertex_count,
+            tri_count,
+            texture_id: shape.texture_id,
+            scissors: scissor_rect,
+        });
+        vertex_offset += vertex_count;
+        index_offset += index_count;
+
+        for (vert, dest) in shape.vertices.iter().zip(vb.iter_mut()) {
+            *dest = CustomVertex {
+                pos: [vert.pos.x, vert.pos.y, 0.], // z=0 for all egui meshes
+                col: [
+                    vert.color.a(),
+                    vert.color.r(),
+                    vert.color.g(),
+                    vert.color.b(),
+                ],
+                uv: [vert.uv.x, vert.uv.y],
             };
-
-            let vertex_offset = vertices.len();
-            let index_offset = indices.len();
-            draws.push(CoalescedDraw {
-                vertex_offset,
-                index_offset,
-                vertex_count: shape.vertices.len(),
-                tri_count: shape.indices.len() / 3,
-                texture_id: shape.texture_id,
-                scissors: scissor_rect,
-            });
-
-            vertices.extend(shape.vertices.iter().map(|vert| {
-                CustomVertex {
-                    pos: [vert.pos.x, vert.pos.y, 0.], // z=0 for all egui meshes
-                    col: [
-                        vert.color.a(),
-                        vert.color.r(),
-                        vert.color.g(),
-                        vert.color.b(),
-                    ],
-                    uv: [vert.uv.x, vert.uv.y],
-                }
-            }));
-            indices.extend(shape.indices.iter());
         }
+        ib[..shape.indices.len()].copy_from_slice(&shape.indices);
 
-        Self {
-            vertices,
-            indices,
-            draws,
-        }
+        // "move pointers" so we write after the last mesh we did
+        vb = &mut vb[vertex_count..];
+        ib = &mut ib[index_count..];
     }
 
-    pub fn upload(&self) -> Result<(), Error> {
-        unimplemented!()
-    }
+    Ok(draws)
 }
 
 impl<'a> EguiDx9<'a> {
@@ -203,12 +199,12 @@ impl<'a> EguiDx9<'a> {
 
         let clipped_meshes = self.egui_ctx.tessellate(shapes);
 
-        // scan through meshes and build merged vert/index lists so we only upload
+        // scan through meshes and upload merged vert/index lists so we only upload
         // a single vtx buffer and a single idx buffer.
-        let coalesced_geometry = CoalescedGeometry::from_clipped_meshes(&clipped_meshes);
+        let draws = upload_geometry(todo!(), todo!(), todo!())?;
 
         let mut last_tex = None;
-        for draw in coalesced_geometry.draws {
+        for draw in draws {
             if last_tex != Some(draw.texture_id) {
                 // need to switch used texture for this draw call!
                 unsafe {
