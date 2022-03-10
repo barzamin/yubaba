@@ -90,9 +90,8 @@ struct CoalescedDraw {
     pub scissors: RECT,
 }
 
-pub struct EguiDx9<'a> {
+pub struct EguiDx9 {
     egui_ctx: egui::Context,
-    d3ddevice: &'a IDirect3DDevice9,
 
     // egui frame state
     shapes: Vec<ClippedShape>,
@@ -104,11 +103,10 @@ pub struct EguiDx9<'a> {
     index_buffer: Resizing<IndexBuffer>,
 }
 
-impl<'a> EguiDx9<'a> {
-    pub fn new(device: &'a IDirect3DDevice9) -> Result<Self, Error> {
+impl EguiDx9 {
+    pub fn new(device: &IDirect3DDevice9) -> Result<Self, Error> {
         Ok(Self {
             egui_ctx: Default::default(),
-            d3ddevice: device,
 
             shapes: Default::default(),
             textures_delta: Default::default(),
@@ -137,7 +135,7 @@ impl<'a> EguiDx9<'a> {
         needs_repaint
     }
 
-    unsafe fn render_state_setup(&mut self, viewport_size: [u32; 2]) -> Result<(), Error> {
+    unsafe fn render_state_setup(&mut self, device: &IDirect3DDevice9, viewport_size: [u32; 2]) -> Result<(), Error> {
         // TODO(petra): fb size
 
         let vp = D3DVIEWPORT9 {
@@ -148,47 +146,47 @@ impl<'a> EguiDx9<'a> {
             MinZ: 0.0,
             MaxZ: 1.0,
         };
-        self.d3ddevice.SetViewport(&vp)?;
+        device.SetViewport(&vp)?;
         // use fixed-function dx9 pipeline
-        self.d3ddevice.SetPixelShader(None)?;
-        self.d3ddevice.SetVertexShader(None)?;
+        device.SetPixelShader(None)?;
+        device.SetVertexShader(None)?;
         // "egui is NOT consistent with what winding order it uses, so turn off backface culling."
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE.0)?;
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_LIGHTING, false.into())?;
-        self.d3ddevice.SetRenderState(D3DRS_ZENABLE, false.into())?;
-        self.d3ddevice
+        device.SetRenderState(D3DRS_ZENABLE, false.into())?;
+        device
             .SetRenderState(D3DRS_ALPHABLENDENABLE, true.into())?;
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_ALPHATESTENABLE, false.into())?;
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD.0)?;
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA.0)?;
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA.0)?;
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_SCISSORTESTENABLE, true.into())?;
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD.0 as _)?;
-        self.d3ddevice
+        device
             .SetRenderState(D3DRS_FOGENABLE, false.into())?;
-        self.d3ddevice
+        device
             .SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE.0 as _)?;
-        self.d3ddevice
+        device
             .SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE as _)?;
-        self.d3ddevice
+        device
             .SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE as _)?;
-        self.d3ddevice
+        device
             .SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as _)?;
-        self.d3ddevice
+        device
             .SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE as _)?;
-        self.d3ddevice
+        device
             .SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE as _)?;
-        self.d3ddevice
+        device
             .SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR.0 as _)?;
-        self.d3ddevice
+        device
             .SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR.0 as _)?;
 
         // TODO(petra) BIG TODO MAKE THIS NOT 0
@@ -201,15 +199,16 @@ impl<'a> EguiDx9<'a> {
         };
         // #define D3DTS_WORLDMATRIX(index) (D3DTRANSFORMSTATETYPE)(index + 256)
         // #define D3DTS_WORLD  D3DTS_WORLDMATRIX(0)
-        self.d3ddevice.SetTransform(D3DTRANSFORMSTATETYPE(256), &MAT_IDENTITY)?;
-        self.d3ddevice.SetTransform(D3DTS_VIEW, &MAT_IDENTITY)?;
-        self.d3ddevice.SetTransform(D3DTS_PROJECTION, &mat_proj)?;
+        device.SetTransform(D3DTRANSFORMSTATETYPE(256), &MAT_IDENTITY)?;
+        device.SetTransform(D3DTS_VIEW, &MAT_IDENTITY)?;
+        device.SetTransform(D3DTS_PROJECTION, &mat_proj)?;
 
         Ok(())
     }
 
     fn upload_geometry(
         &mut self,
+        device: &IDirect3DDevice9,
         clipped_meshes: &[ClippedMesh],
     ) -> Result<Vec<CoalescedDraw>, Error> {
         // compute total sizes of geometry so we know whether we have to resize
@@ -220,8 +219,8 @@ impl<'a> EguiDx9<'a> {
         let total_indices = clipped_meshes.iter().map(|mesh| mesh.1.indices.len()).sum();
 
         // lock (and recreate for range size if necessary! thanks Resizing<T>)
-        let mut vb = self.vertex_buffer.lock(self.d3ddevice, 0..total_vertices)?;
-        let mut ib = self.index_buffer.lock(self.d3ddevice, 0..total_indices)?;
+        let mut vb = self.vertex_buffer.lock(device, 0..total_vertices)?;
+        let mut ib = self.index_buffer.lock(device, 0..total_indices)?;
 
         let mut vertex_offset = 0;
         let mut index_offset = 0;
@@ -276,7 +275,9 @@ impl<'a> EguiDx9<'a> {
         Ok(draws)
     }
 
-    pub fn paint(&mut self /* , dimensions: [u32; 2] */) -> Result<(), Error> {
+    pub fn paint(&mut self,
+        device: &IDirect3DDevice9,
+    /* , dimensions: [u32; 2] */) -> Result<(), Error> {
         let shapes = mem::take(&mut self.shapes);
         let mut textures_delta = std::mem::take(&mut self.textures_delta);
 
@@ -290,14 +291,14 @@ impl<'a> EguiDx9<'a> {
 
         // scan through meshes and upload merged vert/index lists so we only upload
         // a single vtx buffer and a single idx buffer.
-        let draws = self.upload_geometry(&clipped_meshes)?;
+        let draws = self.upload_geometry(device, &clipped_meshes)?;
 
         let mut last_tex = None;
         for draw in draws {
             if last_tex != Some(draw.texture_id) {
                 // need to switch used texture for this draw call!
                 unsafe {
-                    self.d3ddevice
+                    device
                         .SetTexture(0, self.textures.get(draw.texture_id)?)?;
                 }
                 last_tex = Some(draw.texture_id);
@@ -305,18 +306,18 @@ impl<'a> EguiDx9<'a> {
 
             unsafe {
                 // set up vb and ib for draw
-                self.d3ddevice.SetStreamSource(
+                device.SetStreamSource(
                     0,
                     self.vertex_buffer.raw(),
                     0,
                     mem::size_of::<CustomVertex>() as u32,
                 )?;
-                self.d3ddevice.SetIndices(self.index_buffer.raw())?;
-                self.d3ddevice.SetFVF(D3DFVF_CUSTOMVERTEX)?;
+                device.SetIndices(self.index_buffer.raw())?;
+                device.SetFVF(D3DFVF_CUSTOMVERTEX)?;
 
                 // do the (clipped) draw
-                self.d3ddevice.SetScissorRect(&draw.scissors)?;
-                self.d3ddevice.DrawIndexedPrimitive(
+                device.SetScissorRect(&draw.scissors)?;
+                device.DrawIndexedPrimitive(
                     D3DPT_TRIANGLELIST,
                     draw.vertex_offset as i32,
                     0,

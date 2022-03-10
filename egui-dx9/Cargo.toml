@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 egui = "0.17.0"
 epi = "0.17.0"
-ouroboros = "0.14.2"
 thiserror = "1.0.30"
 
 [dependencies.windows]
