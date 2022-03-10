@@ -1,20 +1,24 @@
-use std::{collections::HashMap, mem, ptr};
+use core::slice;
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    mem, ptr, borrow::Borrow,
+};
 
-use buffer::{CustomVertex, IndexBuffer, Resizing, VertexBuffer, D3DFVF_CUSTOMVERTEX};
-use egui::{epaint::ClippedShape, ClippedMesh, TextureId};
+use egui::{epaint::ClippedShape, ClippedMesh, TextureId, ImageData, Color32};
+use tracing::{debug, span, Level, trace};
 use windows::Win32::{
     Foundation::RECT,
     Graphics::{
         Direct3D::{D3DMATRIX, D3DMATRIX_0},
         Direct3D9::{
-            IDirect3DBaseTexture9, IDirect3DDevice9, IDirect3DIndexBuffer9, IDirect3DVertexBuffer9,
-            D3DBLENDOP_ADD, D3DBLEND_INVSRCALPHA, D3DBLEND_SRCALPHA, D3DCULL_NONE,
-            D3DPT_TRIANGLELIST, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP,
-            D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_FOGENABLE, D3DRS_LIGHTING,
-            D3DRS_SCISSORTESTENABLE, D3DRS_SHADEMODE, D3DRS_SRCBLEND, D3DRS_ZENABLE,
-            D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER, D3DSHADE_GOURAUD, D3DTEXF_LINEAR,
-            D3DTOP_MODULATE, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2, D3DTSS_ALPHAOP, D3DTSS_COLORARG1,
-            D3DTSS_COLORARG2, D3DTSS_COLOROP, D3DVIEWPORT9, D3DTS_TEXTURE4, D3DTRANSFORMSTATETYPE, D3DTS_VIEW, D3DTS_PROJECTION,
+            IDirect3DDevice9, IDirect3DIndexBuffer9, IDirect3DStateBlock9, D3DBLENDOP_ADD,
+            D3DBLEND_INVSRCALPHA, D3DBLEND_SRCALPHA, D3DCULL_NONE, D3DPT_TRIANGLELIST,
+            D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP, D3DRS_CULLMODE,
+            D3DRS_DESTBLEND, D3DRS_FOGENABLE, D3DRS_LIGHTING, D3DRS_SCISSORTESTENABLE,
+            D3DRS_SHADEMODE, D3DRS_SRCBLEND, D3DRS_ZENABLE, D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER,
+            D3DSBT_ALL, D3DSHADE_GOURAUD, D3DTEXF_LINEAR, D3DTOP_MODULATE, D3DTRANSFORMSTATETYPE,
+            D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2, D3DTSS_ALPHAOP, D3DTSS_COLORARG1, D3DTSS_COLORARG2,
+            D3DTSS_COLOROP, D3DTS_PROJECTION, D3DTS_VIEW, D3DVIEWPORT9, D3DLOCKED_RECT,
         },
     },
     System::SystemServices::{D3DTA_DIFFUSE, D3DTA_TEXTURE},
@@ -22,6 +26,10 @@ use windows::Win32::{
 
 mod buffer;
 mod locks;
+mod texture;
+
+use crate::buffer::{CustomVertex, IndexBuffer, Resizing, VertexBuffer, D3DFVF_CUSTOMVERTEX};
+use crate::texture::{Texture, Textures};
 
 const DEFAULT_VERTEX_BUFFER_SIZE: usize = 5000;
 const DEFAULT_INDEX_BUFFER_SIZE: usize = 1000 * 3;
@@ -47,38 +55,28 @@ pub enum Error {
 
     #[error("attempted to remove texture id {0:?} which does not exist")]
     NoSuchTexture(TextureId),
+
+    #[error("CreateTexture returned no texture")]
+    CreatedNullTexture,
 }
 
-struct Textures {
-    textures: HashMap<TextureId, IDirect3DBaseTexture9>,
+struct StateGuard {
+    previous: IDirect3DStateBlock9,
 }
 
-impl Textures {
-    fn new() -> Self {
-        Self {
-            textures: Default::default(),
-        }
-    }
-
-    // fn insert(&mut self, texture_id: u32, )
-
-    fn free(&mut self, texture_id: TextureId) -> Result<(), Error> {
-        let texture = self
-            .textures
-            .remove(&texture_id)
-            .ok_or_else(|| Error::NoSuchTexture(texture_id))?;
-        drop(texture);
-
-        Ok(())
-    }
-
-    fn get(&self, texture_id: TextureId) -> Result<&IDirect3DBaseTexture9, Error> {
-        self.textures
-            .get(&texture_id)
-            .ok_or_else(|| Error::NoSuchTexture(texture_id))
+impl StateGuard {
+    unsafe fn backup(device: &IDirect3DDevice9) -> Result<Self, Error> {
+        Ok(Self {
+            previous: device.CreateStateBlock(D3DSBT_ALL)?,
+        })
     }
 }
 
+impl Drop for StateGuard {
+    fn drop(&mut self) {
+        unsafe { self.previous.Apply() }.unwrap(); // restore old state
+    }
+}
 struct CoalescedDraw {
     pub texture_id: TextureId,
 
@@ -101,6 +99,11 @@ pub struct EguiDx9 {
     textures: Textures,
     vertex_buffer: Resizing<VertexBuffer>,
     index_buffer: Resizing<IndexBuffer>,
+}
+
+type ARGB = [u8; 4];
+fn color32_to_argb(c: Color32) -> ARGB {
+    [c.a(), c.r(), c.g(), c.b()]
 }
 
 impl EguiDx9 {
@@ -135,7 +138,11 @@ impl EguiDx9 {
         needs_repaint
     }
 
-    unsafe fn render_state_setup(&mut self, device: &IDirect3DDevice9, viewport_size: [u32; 2]) -> Result<(), Error> {
+    unsafe fn setup_dx_state(
+        &mut self,
+        device: &IDirect3DDevice9,
+        viewport_size: [u32; 2],
+    ) -> Result<(), Error> {
         // TODO(petra): fb size
 
         let vp = D3DVIEWPORT9 {
@@ -151,49 +158,38 @@ impl EguiDx9 {
         device.SetPixelShader(None)?;
         device.SetVertexShader(None)?;
         // "egui is NOT consistent with what winding order it uses, so turn off backface culling."
-        device
-            .SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE.0)?;
-        device
-            .SetRenderState(D3DRS_LIGHTING, false.into())?;
+        device.SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE.0)?;
+        device.SetRenderState(D3DRS_LIGHTING, false.into())?;
         device.SetRenderState(D3DRS_ZENABLE, false.into())?;
-        device
-            .SetRenderState(D3DRS_ALPHABLENDENABLE, true.into())?;
-        device
-            .SetRenderState(D3DRS_ALPHATESTENABLE, false.into())?;
-        device
-            .SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD.0)?;
-        device
-            .SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA.0)?;
-        device
-            .SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA.0)?;
-        device
-            .SetRenderState(D3DRS_SCISSORTESTENABLE, true.into())?;
-        device
-            .SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD.0 as _)?;
-        device
-            .SetRenderState(D3DRS_FOGENABLE, false.into())?;
-        device
-            .SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE.0 as _)?;
-        device
-            .SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE as _)?;
-        device
-            .SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE as _)?;
-        device
-            .SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as _)?;
-        device
-            .SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE as _)?;
-        device
-            .SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE as _)?;
-        device
-            .SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR.0 as _)?;
-        device
-            .SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR.0 as _)?;
+        device.SetRenderState(D3DRS_ALPHABLENDENABLE, true.into())?;
+        device.SetRenderState(D3DRS_ALPHATESTENABLE, false.into())?;
+        device.SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD.0)?;
+        device.SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA.0)?;
+        device.SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA.0)?;
+        device.SetRenderState(D3DRS_SCISSORTESTENABLE, true.into())?;
+        device.SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD.0 as _)?;
+        device.SetRenderState(D3DRS_FOGENABLE, false.into())?;
+        device.SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE.0 as _)?;
+        device.SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE as _)?;
+        device.SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE as _)?;
+        device.SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as _)?;
+        device.SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE as _)?;
+        device.SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE as _)?;
+        device.SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR.0 as _)?;
+        device.SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR.0 as _)?;
 
         // TODO(petra) BIG TODO MAKE THIS NOT 0
+        let l = 0.5;
+        let r = viewport_size[0] as f32+0.5;
+        let t = 0.5;
+        let b = viewport_size[1]as f32+0.5;
         let mat_proj = D3DMATRIX {
             Anonymous: D3DMATRIX_0 {
                 m: [
-                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    2.0/(r-l), 0.0, 0.0, 0.0, //
+                    0.0, 2.0/(t-b), 0.0, 0.0, //
+                    0.0, 0.0, 0.5, 0.0, //
+                    (l+r)/(l-r), (t+b)/(b-t), 0.5, 1.0, //
                 ],
             },
         };
@@ -275,9 +271,11 @@ impl EguiDx9 {
         Ok(draws)
     }
 
-    pub fn paint(&mut self,
+    pub fn paint(
+        &mut self,
         device: &IDirect3DDevice9,
-    /* , dimensions: [u32; 2] */) -> Result<(), Error> {
+        viewport_size: [u32; 2],
+    ) -> Result<(), Error> {
         let shapes = mem::take(&mut self.shapes);
         let mut textures_delta = std::mem::take(&mut self.textures_delta);
 
@@ -285,9 +283,59 @@ impl EguiDx9 {
             // apply texture
             // NOTE: D3DPOOL_MANAGED
             // SEE: https://stackoverflow.com/questions/14955954/update-directx-texture
+            debug!(id=?id, whole=image_delta.is_whole(), "[texid {:?}]: applying delta (size {:?}, pos {:?})", id, image_delta.image.size(), image_delta.pos);
+
+            if image_delta.is_whole() {
+                let texture = unsafe { Texture::create(device, image_delta.image.size()) }?;
+
+                let mut locked_rect = D3DLOCKED_RECT {
+                    Pitch: 0,
+                    pBits: ptr::null_mut(),
+                };
+                debug!("locking whole texture");
+                unsafe { texture.raw().LockRect(0, &mut locked_rect, ptr::null(), 0) }?;
+
+                // upload here or sth
+                unsafe {
+                    debug!("locked_rect={{pitch={:#x}, pBits={:?}}}", locked_rect.Pitch, locked_rect.pBits);
+                    let bits = locked_rect.pBits as *mut u8;
+                    let pitch = locked_rect.Pitch as usize;
+                    let height = image_delta.image.height();
+                    let width = image_delta.image.width();
+                    for y in 0..height {
+                        let gfx_mem_row = slice::from_raw_parts_mut(bits.add(pitch * y) as *mut [u8; 4], pitch/mem::size_of::<[u8; 4]>());
+                        debug!("row({}) addr = {:?}", y, bits.add(pitch * y));
+                        let pix_iter = match image_delta.image {
+                            ImageData::Color(ref i) => {
+                                Box::new(i.pixels.iter().cloned()) as Box<dyn Iterator<Item=Color32>>
+                            },
+                            ImageData::Alpha(ref i) => {
+                                Box::new(i.srgba_pixels(1.0)) as Box<dyn Iterator<Item=Color32>>
+                            },
+                        }.map(color32_to_argb);
+
+                        for (pix, dst) in pix_iter.skip(width*y).take(width).zip(gfx_mem_row) {
+                            *dst = pix;
+                        }
+                    }
+                }
+
+                debug!("unlocking texture");
+                // TODO: use a guard abstraction
+                unsafe { texture.raw().UnlockRect(0) }?;
+
+                let old = self.textures.insert(id, texture);
+                drop(old);
+            }
         }
 
         let clipped_meshes = self.egui_ctx.tessellate(shapes);
+
+        // save old state (will be restored on drop)
+        let _state_guard = unsafe { StateGuard::backup(device) }?;
+
+        // set up our pipeline state for egui rendering
+        unsafe { self.setup_dx_state(device, viewport_size) }?;
 
         // scan through meshes and upload merged vert/index lists so we only upload
         // a single vtx buffer and a single idx buffer.
@@ -298,8 +346,7 @@ impl EguiDx9 {
             if last_tex != Some(draw.texture_id) {
                 // need to switch used texture for this draw call!
                 unsafe {
-                    device
-                        .SetTexture(0, self.textures.get(draw.texture_id)?)?;
+                    device.SetTexture(0, self.textures.get(draw.texture_id)?.raw())?;
                 }
                 last_tex = Some(draw.texture_id);
             }

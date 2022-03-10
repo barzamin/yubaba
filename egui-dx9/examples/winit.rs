@@ -22,6 +22,8 @@ const WIN_WIDTH: u32 = 800;
 const WIN_HEIGHT: u32 = 800;
 
 fn main() {
+    tracing_subscriber::fmt::init();
+
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title("dx9 egui")
@@ -74,12 +76,12 @@ fn main() {
     .expect("couldn't create d3d9 device");
 
     let device = device.expect("d3d9 device was null");
-    let mut egui_backend = egui_dx9::EguiDx9::new(&device).expect("couldnt initialize the egui dx9 backend");
+    let mut egui_backend =
+        egui_dx9::EguiDx9::new(&device).expect("couldnt initialize the egui dx9 backend");
 
     let mut clear_color = [0.1, 0.1, 0.1];
 
-    event_loop.run(
-        move |event, _, ctlflow| match event {
+    event_loop.run(move |event, _, ctlflow| match event {
         Event::MainEventsCleared => {
             window.request_redraw();
         }
@@ -100,7 +102,9 @@ fn main() {
 
             device.BeginScene().unwrap();
 
-            egui_backend.paint(&device);
+            egui_backend
+                .paint(&device, window.inner_size().into())
+                .unwrap();
 
             device.EndScene().unwrap();
             device
