@@ -39,6 +39,10 @@ impl Texture {
     pub fn raw(&self) -> &IDirect3DTexture9 {
         &self.inner
     }
+
+    pub fn size(&self) -> [usize; 2] {
+        self.size
+    }
 }
 
 pub(crate) struct Textures {

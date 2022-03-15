@@ -4,12 +4,12 @@ use std::{
     ptr, slice,
 };
 
-use windows::Win32::{
-    Graphics::Direct3D9::{
-        IDirect3DDevice9, IDirect3DIndexBuffer9, IDirect3DVertexBuffer9, D3DFMT_INDEX32,
-        D3DLOCK_DISCARD, D3DPOOL_DEFAULT, D3DUSAGE_DYNAMIC, D3DUSAGE_WRITEONLY,
-    },
-    System::SystemServices::{D3DFVF_DIFFUSE, D3DFVF_TEX1, D3DFVF_XYZ},
+use windows::Win32::Graphics::Direct3D9::{
+    IDirect3DDevice9, IDirect3DIndexBuffer9, IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9,
+    D3DDECLMETHOD_DEFAULT, D3DDECLTYPE_FLOAT2, D3DDECLTYPE_FLOAT4, D3DDECLTYPE_UNUSED,
+    D3DDECLUSAGE_COLOR, D3DDECLUSAGE_POSITION, D3DDECLUSAGE_TEXCOORD, D3DFMT_INDEX32,
+    D3DLOCK_DISCARD, D3DPOOL_DEFAULT, D3DUSAGE_DYNAMIC, D3DUSAGE_WRITEONLY, D3DVERTEXBUFFER_DESC,
+    D3DVERTEXELEMENT9,
 };
 
 use crate::{
@@ -17,14 +17,12 @@ use crate::{
     Error,
 };
 
-// TODO(petra) kinda hacky lol
-pub(crate) const D3DFVF_CUSTOMVERTEX: u32 = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1;
-
 #[repr(C)]
+#[derive(Debug)]
 pub(crate) struct CustomVertex {
-    pub pos: [f32; 3],
-    pub col: [u8; 4],
+    pub pos: [f32; 2],
     pub uv: [f32; 2],
+    pub col: [f32; 4],
 }
 
 pub(crate) trait DxBuffer: Sized {
@@ -77,6 +75,10 @@ where
         self.backing.lock(range)
     }
 
+    pub fn backing(&self) -> &T {
+        &self.backing
+    }
+
     pub fn raw(&self) -> &T::RawBuffer {
         self.backing.raw()
     }
@@ -89,6 +91,7 @@ where
 pub(crate) struct VertexBuffer {
     size: usize,
     buffer: IDirect3DVertexBuffer9,
+    decl: IDirect3DVertexDeclaration9,
 }
 
 impl VertexBuffer {
@@ -100,7 +103,7 @@ impl VertexBuffer {
         device.CreateVertexBuffer(
             (vtx_count * mem::size_of::<CustomVertex>()) as u32,
             mem::transmute(D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY),
-            D3DFVF_CUSTOMVERTEX,
+            0,
             D3DPOOL_DEFAULT,
             &mut vtx_buf,
             ptr::null_mut(),
@@ -108,6 +111,52 @@ impl VertexBuffer {
 
         vtx_buf.ok_or(Error::MissingVtxBuf)
     }
+
+    pub fn decl(&self) -> &IDirect3DVertexDeclaration9 {
+        &self.decl
+    }
+
+    unsafe fn create_decl(device: &IDirect3DDevice9) -> Result<IDirect3DVertexDeclaration9, Error> {
+        let elements = [
+            D3DVERTEXELEMENT9 {
+                Stream: 0,
+                Offset: 0,
+                Type: D3DDECLTYPE_FLOAT2.0 as _,
+                Method: D3DDECLMETHOD_DEFAULT.0 as _,
+                Usage: D3DDECLUSAGE_POSITION.0 as _,
+                UsageIndex: 0,
+            },
+            D3DVERTEXELEMENT9 {
+                Stream: 0,
+                Offset: 8,
+                Type: D3DDECLTYPE_FLOAT2.0 as _,
+                Method: D3DDECLMETHOD_DEFAULT.0 as _,
+                Usage: D3DDECLUSAGE_TEXCOORD.0 as _,
+                UsageIndex: 0,
+            },
+            D3DVERTEXELEMENT9 {
+                Stream: 0,
+                Offset: 16,
+                Type: D3DDECLTYPE_FLOAT4.0 as _,
+                Method: D3DDECLMETHOD_DEFAULT.0 as _,
+                Usage: D3DDECLUSAGE_COLOR.0 as _,
+                UsageIndex: 0,
+            },
+            // D3DDECL_END
+            D3DVERTEXELEMENT9 {
+                Stream: 0xFF,
+                Offset: 0,
+                Type: D3DDECLTYPE_UNUSED.0 as _,
+                Method: 0,
+                Usage: 0,
+                UsageIndex: 0,
+            },
+        ];
+
+        Ok(device.CreateVertexDeclaration(&elements as *const _)?)
+    }
+
+    // pub fn format() ->
 }
 
 impl DxBuffer for VertexBuffer {
@@ -122,6 +171,7 @@ impl DxBuffer for VertexBuffer {
         Ok(Self {
             buffer: unsafe { Self::create_vtx_buf(device, max_size) }?,
             size: max_size,
+            decl: unsafe { Self::create_decl(device) }?,
         })
     }
 
